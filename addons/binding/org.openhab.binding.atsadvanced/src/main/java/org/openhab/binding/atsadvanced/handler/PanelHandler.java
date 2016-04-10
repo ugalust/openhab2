@@ -154,17 +154,20 @@ public class PanelHandler extends BaseBridgeHandler {
     public void dispose() {
         logger.debug("Disposing ATS Advanced Panel handler.");
 
-        stopGatewayProcess();
-
         if (connectionJob != null && !connectionJob.isCancelled()) {
             connectionJob.cancel(true);
             connectionJob = null;
         }
+
         if (pollingJob != null && !pollingJob.isCancelled()) {
             pollingJob.cancel(true);
             pollingJob = null;
         }
+
         logout();
+
+        stopGatewayProcess();
+
         super.dispose();
     }
 
