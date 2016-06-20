@@ -11,6 +11,7 @@ import org.eclipse.smarthome.core.thing.ThingStatus;
 import org.eclipse.smarthome.core.thing.binding.BaseThingHandler;
 import org.eclipse.smarthome.core.thing.binding.ThingHandler;
 import org.eclipse.smarthome.core.types.Command;
+import org.eclipse.smarthome.core.types.RefreshType;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants.ZoneStatusFlags;
 import org.openhab.binding.atsadvanced.webservices.client.ProgramSendMessageResponse;
@@ -76,6 +77,10 @@ public class ZoneHandler extends BaseThingHandler implements PanelStatusListener
         if (panel == null) {
             logger.warn("ATS Advanced Panel handler not found. Cannot handle command without bridge.");
             return;
+        }
+
+        if (command instanceof RefreshType) {
+            onChangedStatus();
         }
 
     }

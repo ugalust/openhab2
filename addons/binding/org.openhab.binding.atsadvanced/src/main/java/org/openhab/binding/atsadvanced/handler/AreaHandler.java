@@ -11,6 +11,7 @@ import org.eclipse.smarthome.core.thing.ThingStatus;
 import org.eclipse.smarthome.core.thing.binding.BaseThingHandler;
 import org.eclipse.smarthome.core.thing.binding.ThingHandler;
 import org.eclipse.smarthome.core.types.Command;
+import org.eclipse.smarthome.core.types.RefreshType;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants.AreaStatusFlags;
 import org.openhab.binding.atsadvanced.webservices.client.ProgramSendMessageResponse;
@@ -76,14 +77,18 @@ public class AreaHandler extends BaseThingHandler implements PanelStatusListener
             return;
         }
 
-        if (channelUID.getId().equals(ATSadvancedBindingConstants.SET)) {
-            if (command instanceof OnOffType) {
-                if (command == OnOffType.ON) {
-                    panel.setArea(((BigDecimal) getConfig().get(NUMBER)).intValue());
-                } else {
-                    panel.unsetArea(((BigDecimal) getConfig().get(NUMBER)).intValue());
+        if (command instanceof RefreshType) {
+            onChangedStatus();
+        } else {
+            if (channelUID.getId().equals(ATSadvancedBindingConstants.SET)) {
+                if (command instanceof OnOffType) {
+                    if (command == OnOffType.ON) {
+                        panel.setArea(((BigDecimal) getConfig().get(NUMBER)).intValue());
+                    } else {
+                        panel.unsetArea(((BigDecimal) getConfig().get(NUMBER)).intValue());
+                    }
+                    onChangedStatus();
                 }
-                onChangedStatus();
             }
         }
     }
