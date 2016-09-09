@@ -1227,10 +1227,6 @@ public class PanelHandler extends BaseBridgeHandler {
 
             }
 
-            // while(state == ControlSessionState.CSMS_FC_Setting) {
-            // state = getControlSessionState(sessionID);
-            // }
-
             finishControlSession(sessionID);
 
             return true;

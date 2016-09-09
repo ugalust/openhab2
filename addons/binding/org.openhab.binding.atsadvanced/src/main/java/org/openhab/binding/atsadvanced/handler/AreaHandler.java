@@ -140,45 +140,51 @@ public class AreaHandler extends BaseThingHandler implements PanelStatusListener
         if (getThing().getStatus() == ThingStatus.ONLINE) {
 
             previousStatus = lastStatus;
-            lastStatus = getBridgeHandler().getAreaStatus(((BigDecimal) getConfig().get(NUMBER)).intValue());
+            ArrayList<AreaStatusFlags> result = getBridgeHandler()
+                    .getAreaStatus(((BigDecimal) getConfig().get(NUMBER)).intValue());
 
-            logger.debug("Area '{}' has changed status from '{}' to '{}'", new Object[] {
-                    (String) getConfig().get(NAME), getPreviousStatus().toString(), getLastStatus().toString() });
+            if (result != null) {
 
-            if (isSet() && !wasSet()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.SET), OnOffType.ON);
-            }
+                lastStatus = result;
 
-            if (!isSet() && wasSet()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.SET), OnOffType.OFF);
-            }
+                logger.debug("Area '{}' has changed status from '{}' to '{}'", new Object[] {
+                        (String) getConfig().get(NAME), getPreviousStatus().toString(), getLastStatus().toString() });
 
-            if (!isSet() && !wasSet()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.SET), OnOffType.OFF);
-            }
+                if (isSet() && !wasSet()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.SET), OnOffType.ON);
+                }
 
-            if (isAlarm() && !wasAlarm()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.ON);
-            }
+                if (!isSet() && wasSet()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.SET), OnOffType.OFF);
+                }
 
-            if (!isAlarm() && wasAlarm()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.OFF);
-            }
+                if (!isSet() && !wasSet()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.SET), OnOffType.OFF);
+                }
 
-            if (!isAlarm() && !wasAlarm()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.OFF);
-            }
+                if (isAlarm() && !wasAlarm()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.ON);
+                }
 
-            if (isExit() && !wasExit()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.EXIT), OnOffType.ON);
-            }
+                if (!isAlarm() && wasAlarm()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.OFF);
+                }
 
-            if (!isExit() && wasExit()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.EXIT), OnOffType.OFF);
-            }
+                if (!isAlarm() && !wasAlarm()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.OFF);
+                }
 
-            if (!isExit() && !wasExit()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.EXIT), OnOffType.OFF);
+                if (isExit() && !wasExit()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.EXIT), OnOffType.ON);
+                }
+
+                if (!isExit() && wasExit()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.EXIT), OnOffType.OFF);
+                }
+
+                if (!isExit() && !wasExit()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.EXIT), OnOffType.OFF);
+                }
             }
         }
     }
@@ -198,12 +204,14 @@ public class AreaHandler extends BaseThingHandler implements PanelStatusListener
             ProgramSendMessageResponse result = panel
                     .getAreaNamesChunk(((BigDecimal) getConfig().get(NUMBER)).intValue());
 
-            for (ProgramProperty property : result.getProperties().getProgramProperty()) {
-                if (property.getId().equals("name")) {
-                    if (!(((String) property.getValue()).equals(""))) {
-                        getThing().getConfiguration().put(NAME, property.getValue());
+            if (result != null) {
+                for (ProgramProperty property : result.getProperties().getProgramProperty()) {
+                    if (property.getId().equals("name")) {
+                        if (!(((String) property.getValue()).equals(""))) {
+                            getThing().getConfiguration().put(NAME, property.getValue());
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }

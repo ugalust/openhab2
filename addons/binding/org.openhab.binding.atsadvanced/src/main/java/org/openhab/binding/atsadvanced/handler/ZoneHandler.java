@@ -47,9 +47,6 @@ public class ZoneHandler extends BaseThingHandler implements PanelStatusListener
 
     @Override
     public void dispose() {
-        // if(getThing().getStatus() != ThingStatus.OFFLINE) {
-        // updateStatus(ThingStatus.OFFLINE);
-        // }
         getBridgeHandler().unregisterStatusListener(this);
     }
 
@@ -105,12 +102,14 @@ public class ZoneHandler extends BaseThingHandler implements PanelStatusListener
             ProgramSendMessageResponse result = panel
                     .getZoneNamesChunk(((BigDecimal) getConfig().get(NUMBER)).intValue());
 
-            for (ProgramProperty property : result.getProperties().getProgramProperty()) {
-                if (property.getId().equals("name")) {
-                    if (!(((String) property.getValue()).equals(""))) {
-                        getThing().getConfiguration().put(NAME, property.getValue());
+            if (result != null) {
+                for (ProgramProperty property : result.getProperties().getProgramProperty()) {
+                    if (property.getId().equals("name")) {
+                        if (!(((String) property.getValue()).equals(""))) {
+                            getThing().getConfiguration().put(NAME, property.getValue());
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
@@ -136,33 +135,39 @@ public class ZoneHandler extends BaseThingHandler implements PanelStatusListener
     public void onChangedStatus() {
         if (getThing().getStatus() == ThingStatus.ONLINE) {
             previousStatus = lastStatus;
-            lastStatus = getBridgeHandler().getZoneStatus(((BigDecimal) getConfig().get(NUMBER)).intValue());
+            ArrayList<ZoneStatusFlags> result = getBridgeHandler()
+                    .getZoneStatus(((BigDecimal) getConfig().get(NUMBER)).intValue());
 
-            logger.debug("Zone '{}' has changed status from '{}' to '{}'", new Object[] {
-                    (String) getConfig().get(NAME), getPreviousStatus().toString(), getLastStatus().toString() });
+            if (result != null) {
 
-            if (isActive() && !wasActive()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ACTIVE), OnOffType.ON);
-            }
+                lastStatus = result;
 
-            if (!isActive() && wasActive()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ACTIVE), OnOffType.OFF);
-            }
+                logger.debug("Zone '{}' has changed status from '{}' to '{}'", new Object[] {
+                        (String) getConfig().get(NAME), getPreviousStatus().toString(), getLastStatus().toString() });
 
-            if (!isActive() && !wasActive()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ACTIVE), OnOffType.OFF);
-            }
+                if (isActive() && !wasActive()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ACTIVE), OnOffType.ON);
+                }
 
-            if (isAlarm() && !wasAlarm()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.ON);
-            }
+                if (!isActive() && wasActive()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ACTIVE), OnOffType.OFF);
+                }
 
-            if (!isAlarm() && wasAlarm()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.OFF);
-            }
+                if (!isActive() && !wasActive()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ACTIVE), OnOffType.OFF);
+                }
 
-            if (!isAlarm() && !wasAlarm()) {
-                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.OFF);
+                if (isAlarm() && !wasAlarm()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.ON);
+                }
+
+                if (!isAlarm() && wasAlarm()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.OFF);
+                }
+
+                if (!isAlarm() && !wasAlarm()) {
+                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.ALARM), OnOffType.OFF);
+                }
             }
         }
     }
