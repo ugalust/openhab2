@@ -463,7 +463,8 @@ public class PanelHandler extends BaseBridgeHandler {
                 webServicesSetUp = false;
             }
         } catch (Exception e1) {
-            logger.error("An exception occurred while setting up the gateway web service: {}", e1.getMessage());
+            logger.error("An exception occurred while setting up the gateway web service: {}", e1.getMessage(), e1);
+            e1.printStackTrace();
             webServicesSetUp = false;
         }
     }
