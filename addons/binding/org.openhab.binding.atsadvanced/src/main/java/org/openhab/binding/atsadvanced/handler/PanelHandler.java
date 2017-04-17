@@ -15,30 +15,18 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
-import java.net.InetAddress;
-import java.net.URL;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.BitSet;
+import java.util.Calendar;
 import java.util.Collection;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-
-import javax.jws.WebMethod;
-import javax.jws.WebParam;
-import javax.jws.WebParam.Mode;
-import javax.jws.WebResult;
-import javax.jws.WebService;
-import javax.jws.soap.SOAPBinding;
-import javax.jws.soap.SOAPBinding.ParameterStyle;
-import javax.jws.soap.SOAPBinding.Style;
-import javax.jws.soap.SOAPBinding.Use;
-import javax.xml.datatype.XMLGregorianCalendar;
-import javax.xml.namespace.QName;
-import javax.xml.ws.Endpoint;
 
 import org.apache.commons.exec.CommandLine;
 import org.apache.commons.exec.DefaultExecuteResultHandler;
@@ -63,19 +51,22 @@ import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants.AreaStatusFlags;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants.ControlSessionState;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants.ZoneStatusFlags;
+import org.openhab.binding.atsadvanced.PanelStatusListener;
 import org.openhab.binding.atsadvanced.internal.ATSAdvancedException;
-import org.openhab.binding.atsadvanced.webservices.client.ISyncReply;
-import org.openhab.binding.atsadvanced.webservices.client.ProgramConfigureGateway;
-import org.openhab.binding.atsadvanced.webservices.client.ProgramConfigureGatewayResponse;
-import org.openhab.binding.atsadvanced.webservices.client.ProgramConfigurePanel;
-import org.openhab.binding.atsadvanced.webservices.client.ProgramConfigurePanelResponse;
-import org.openhab.binding.atsadvanced.webservices.client.ProgramSendMessage;
-import org.openhab.binding.atsadvanced.webservices.client.ProgramSendMessageResponse;
-import org.openhab.binding.atsadvanced.webservices.client.SyncReply;
-import org.openhab.binding.atsadvanced.webservices.datacontract.ArrayOfProgramProperty;
-import org.openhab.binding.atsadvanced.webservices.datacontract.ProgramProperty;
+import org.openhab.binding.atsadvanced.internal.PanelClient.ConfigurePanel;
+import org.openhab.binding.atsadvanced.internal.PanelClient.ConfigurePanelResponse;
+import org.openhab.binding.atsadvanced.internal.PanelClient.Message;
+import org.openhab.binding.atsadvanced.internal.PanelClient.MessageResponse;
+import org.openhab.binding.atsadvanced.internal.PanelClient.Property;
+import org.openhab.binding.atsadvanced.internal.PanelLogProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import net.servicestack.client.JsonServiceClient;
+import net.servicestack.client.JsonUtils;
+import net.servicestack.client.Log;
+import net.servicestack.client.WebServiceException;
+import net.servicestack.client.sse.ServerEventsClient;
 
 /**
  * The {@link PanelHandler} is responsible for handling commands, which are
@@ -91,37 +82,30 @@ public class PanelHandler extends BaseBridgeHandler {
     public static final String PORT_NUMBER = "portNumber";
     public static final String GATEWAY_PORT = "gatewayPortNumber";
     public static final String EVENT_LOGGER_PORT = "eventLoggerPortNumber";
-    // public static final String GATEWAY_URL = "gatewayURL";
-    // public static final String LOGGER_URL = "loggerURL";
     public static final String PIN = "pin";
 
     private Logger logger = LoggerFactory.getLogger(PanelHandler.class);
 
-    private static final QName SERVICE_NAME = new QName("ATSAdvanced.DTO", "SyncReply");
-
     private static int CONNECTION_THREAD_INTERVAL = 5;
-    private static int POLLING_THREAD_INTERVAL = 300;
-    private static int HEART_BEAT = 1000;
+    private static int POLLING_THREAD_INTERVAL = 30;
+    private static int HEART_BEAT = 10000;
     private static int RETRIES = 1;
     private static int TIME_OUT = 2000;
 
     private ScheduledFuture<?> connectionJob;
     private ScheduledFuture<?> pollingJob;
-    private SyncReply syncReply;
-    private Endpoint endPoint = null;
-    private InetAddress localhost;
+    private JsonServiceClient client;
+    private ServerEventsClient sseclient;
     private String lastError = "";
-    private String loggerURL;
     private String gatewayURL;
     private String monoPath;
     private String atsPath;
     private boolean gatewayProcessStarted = false;
     private boolean panelConnected = false;
-    private boolean gatewayConfigured = false;
     private boolean userLoggedIn = false;
     private boolean monitorStarted = false;
     private boolean logsOpened = false;
-    private boolean webServicesSetUp = false;
+    private boolean clientsSetUp = false;
 
     private final ProcessDestroyer shutdownHookProcessDestroyer = new LoggingShutdownHookProcessDestroyer();
     private final DefaultExecuteResultHandler resultHandler = new GatewayExecuteResultHandler();
@@ -133,6 +117,7 @@ public class PanelHandler extends BaseBridgeHandler {
         super(bridge);
         this.monoPath = monoPath;
         this.atsPath = atsPath;
+        Log.setInstance(new PanelLogProvider());
     }
 
     @Override
@@ -145,9 +130,18 @@ public class PanelHandler extends BaseBridgeHandler {
         logger.debug("Initializing ATS Advanced Panel handler.");
         super.initialize();
 
-        onUpdate();
-
         updateStatus(ThingStatus.OFFLINE);
+
+        if (connectionJob == null || connectionJob.isCancelled()) {
+            connectionJob = scheduler.scheduleWithFixedDelay(connectionRunnable, 0, CONNECTION_THREAD_INTERVAL,
+                    TimeUnit.SECONDS);
+        }
+
+        if (pollingJob == null || pollingJob.isCancelled()) {
+            pollingJob = scheduler.scheduleWithFixedDelay(pollingRunnable, POLLING_THREAD_INTERVAL,
+                    POLLING_THREAD_INTERVAL, TimeUnit.SECONDS);
+        }
+
     }
 
     @Override
@@ -165,6 +159,10 @@ public class PanelHandler extends BaseBridgeHandler {
         }
 
         logout();
+
+        if (sseclient != null) {
+            sseclient.close();
+        }
 
         stopGatewayProcess();
 
@@ -185,24 +183,8 @@ public class PanelHandler extends BaseBridgeHandler {
         return panelStatusListeners.remove(panelStatusListener);
     }
 
-    private void onUpdate() {
-        if (connectionJob == null || connectionJob.isCancelled()) {
-            connectionJob = scheduler.scheduleWithFixedDelay(connectionRunnable, 0, CONNECTION_THREAD_INTERVAL,
-                    TimeUnit.SECONDS);
-        }
-
-        if (pollingJob == null || pollingJob.isCancelled()) {
-            pollingJob = scheduler.scheduleWithFixedDelay(pollingRunnable, POLLING_THREAD_INTERVAL,
-                    POLLING_THREAD_INTERVAL, TimeUnit.SECONDS);
-        }
-    }
-
     public boolean isConnected() {
         return panelConnected;
-    }
-
-    public boolean isGatewayConfigured() {
-        return gatewayConfigured;
     }
 
     public boolean isLoggedIn() {
@@ -217,8 +199,8 @@ public class PanelHandler extends BaseBridgeHandler {
         return logsOpened;
     }
 
-    public boolean isWebServicesSetUp() {
-        return webServicesSetUp;
+    public boolean isClientsSetUp() {
+        return clientsSetUp;
     }
 
     public boolean isGatewayStarted() {
@@ -236,10 +218,13 @@ public class PanelHandler extends BaseBridgeHandler {
             try {
                 logger.debug("Polling the ATS Advanced Panel");
                 if (getThing().getStatus() == ThingStatus.ONLINE) {
-                    if (isGatewayStarted() && isWebServicesSetUp() && isGatewayConfigured() && isConnected()
-                            && isLoggedIn() && isMonitorStarted() && isLogsOpened()) {
+                    if (isGatewayStarted() && isClientsSetUp() && isConnected() && isLoggedIn() && isMonitorStarted()
+                            && isLogsOpened()) {
                         updateChangedZonesStatus();
                         updateChangedAreasStatus();
+                    }
+                    if (sseclient != null) {
+                        sseclient.Heartbeat();
                     }
                 }
             } catch (Exception e) {
@@ -256,25 +241,19 @@ public class PanelHandler extends BaseBridgeHandler {
         @Override
         public void run() {
             try {
-
                 if (getThing().getStatus() == ThingStatus.OFFLINE) {
 
                     if (!isGatewayStarted()) {
                         startGatewayProcess();
                     }
 
-                    if (isGatewayStarted() && !isWebServicesSetUp()) {
-                        setupWebServices();
+                    if (isGatewayStarted() && !isClientsSetUp()) {
+                        setupClients();
                     }
 
-                    if (!isConnected() && isWebServicesSetUp()) {
+                    if (!isConnected() && isClientsSetUp()) {
                         // instruct the gateway to connect to the ATS panel
                         establishConnection();
-                    }
-
-                    // configure the gateway so that it can find our log/monitor web service
-                    if (!isGatewayConfigured() && isConnected()) {
-                        configureGateway();
                     }
 
                     if (!isLoggedIn() && isConnected()) {
@@ -301,11 +280,16 @@ public class PanelHandler extends BaseBridgeHandler {
                         openLogs();
                     }
 
-                    if (isWebServicesSetUp() && isGatewayConfigured() && isConnected() && isLoggedIn()
-                            && isMonitorStarted() && isLogsOpened()) {
+                    if (isClientsSetUp() && isConnected() && isLoggedIn() && isMonitorStarted() && isLogsOpened()) {
                         onConnectionResumed();
                     }
                 }
+            } catch (WebServiceException w) {
+                logger.debug("Error code {}", w.getErrorCode());
+                logger.debug("Error message {}", w.getErrorMessage());
+                logger.debug("Status Code {}", w.getStatusCode());
+                logger.debug("Status Desc {}", w.getStatusDescription());
+                logger.debug("Servce trace {}", w.getServerStackTrace());
             } catch (Exception e) {
                 logger.warn("An exception occurred while setting up the ATS Advanced Panel: '{}'", e.getMessage());
                 e.printStackTrace();
@@ -316,15 +300,8 @@ public class PanelHandler extends BaseBridgeHandler {
 
     public void onConnectionLost() {
 
-        if (endPoint != null) {
-            endPoint.stop();
-            endPoint = null;
-        }
-
         // let's start over again
-        webServicesSetUp = false;
         panelConnected = false;
-        gatewayConfigured = false;
         userLoggedIn = false;
         monitorStarted = false;
         logsOpened = false;
@@ -346,23 +323,19 @@ public class PanelHandler extends BaseBridgeHandler {
 
         if (!gatewayProcessStarted) {
 
-            gatewayURL = "http://" + (String) getConfig().get(OPENHAB_HOST) + ":" + getConfig().get(GATEWAY_PORT)
-                    + "/soap11";
-            loggerURL = "http://" + (String) getConfig().get(OPENHAB_HOST) + ":" + getConfig().get(EVENT_LOGGER_PORT)
-                    + "/eventlogger";
-
+            gatewayURL = "http://" + (String) getConfig().get(OPENHAB_HOST) + ":" + getConfig().get(GATEWAY_PORT);
             logger.debug("The ATS Advanced Panel handler will contact the gateway via '{}'", gatewayURL);
-            logger.debug("The ATS Advanced Panel gateway will contact the handler via '{}'", loggerURL);
 
             DefaultExecutor executor = new DefaultExecutor();
             executor.setExitValue(0);
 
-            PumpStreamHandler psh = new PumpStreamHandler(new GatewayLogHangler(logger, 0),
-                    new GatewayLogHangler(logger, 1));
+            PumpStreamHandler psh = new PumpStreamHandler(new GatewayLogHandler(logger, 0),
+                    new GatewayLogHandler(logger, 1));
             // PumpStreamHandler psh = new PumpStreamHandler(new GatewayLogHangler(logger, 0));
             executor.setStreamHandler(psh);
             executor.setProcessDestroyer(shutdownHookProcessDestroyer);
             executor.setExitValue(0);
+            executor.setWatchdog(watchDog);
 
             File file = new File(atsPath);
             executor.setWorkingDirectory(file);
@@ -382,9 +355,9 @@ public class PanelHandler extends BaseBridgeHandler {
                 logger.debug("Starting the ATS Advanced Panel gateway process : '{}'", commandLine.toString());
                 executor.execute(commandLine, environment, resultHandler);
             } catch (IOException e) {
-                logger.error("An exception occured while starting the gateway process : '{}'", e.getMessage());
+                logger.error("An exception occurred while starting the gateway process : '{}'", e.getMessage());
             }
-            gatewayProcessStarted = true;
+            // gatewayProcessStarted = true;
         }
     }
 
@@ -393,7 +366,7 @@ public class PanelHandler extends BaseBridgeHandler {
             String line;
             DefaultExecutor executor = new DefaultExecutor();
             CommandLine psCmd = new CommandLine("ps");
-            psCmd.addArgument("-A");
+            psCmd.addArgument("aux");
 
             ByteArrayOutputStream err = new ByteArrayOutputStream();
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -406,6 +379,7 @@ public class PanelHandler extends BaseBridgeHandler {
                     new InputStreamReader(new ByteArrayInputStream(out.toByteArray())));
 
             while ((line = input.readLine()) != null) {
+                logger.trace("ps line '{}'", line);
                 if (line.contains(commandline.toString())) {
 
                     String[] entry = StringUtils.split(line);
@@ -440,181 +414,127 @@ public class PanelHandler extends BaseBridgeHandler {
         logger.debug("Destroying the gateway process");
         watchDog.destroyProcess();
 
-        // try {
-        // // Safer to waitFor() after destroy()
-        // resultHandler.waitFor();
-        // } catch (InterruptedException e) {
-        // logger.error("The gateway process was interrupted. This should not occur");
-        // }
+        try {
+            // Safer to waitFor() after destroy()
+            resultHandler.waitFor();
+        } catch (InterruptedException e) {
+            logger.error("The gateway process was interrupted. This should not occur");
+        }
 
         gatewayProcessStarted = false;
     }
 
-    private void setupWebServices() {
-
-        // initialise the stub to access the webservices exposed by the gateway
+    private void setupClients() {
         try {
-
-            // syncReply = new SyncReply(new URL((String) getConfig().get(GATEWAY_URL)), SERVICE_NAME);
-            syncReply = new SyncReply(new URL(gatewayURL), SERVICE_NAME);
-            if (syncReply != null) {
-                webServicesSetUp = true;
-            } else {
-                webServicesSetUp = false;
+            logger.trace("The Json Service Stack client will use base URL '{}'", gatewayURL);
+            client = new JsonServiceClient(gatewayURL);
+            if (sseclient != null) {
+                sseclient.close();
             }
-        } catch (Exception e1) {
-            logger.error("An exception occurred while setting up the gateway web service: {}", e1.getMessage(), e1);
-            e1.printStackTrace();
-            webServicesSetUp = false;
-        }
-    }
-
-    private void configureGateway() {
-
-        if (isWebServicesSetUp()) {
-
-            String finalLoggerURL = loggerURL + System.currentTimeMillis();
-
-            // set up the web service to receive monitor and logger events from the panel
-            if (endPoint == null || !endPoint.isPublished()) {
-                try {
-                    endPoint = Endpoint.publish(finalLoggerURL, new EventLogger());
-                } catch (Exception e) {
-                    logger.error("An exception occurred while publishing the web services endpoint: {}",
-                            e.getMessage());
-                    gatewayConfigured = false;
-                    return;
-                }
-            }
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
-            logger.debug("The gateway will be configured to log to {}", finalLoggerURL);
-            ProgramConfigureGateway programConfigureGateway = new ProgramConfigureGateway();
-            programConfigureGateway.setOpenHABURL(finalLoggerURL);
-            ProgramConfigureGatewayResponse _programConfigureGateway__return = port
-                    .programConfigureGateway(programConfigureGateway);
-            logger.debug("The gateway returned: {}", _programConfigureGateway__return.getResult());
-            if (!_programConfigureGateway__return.getResult().equals("1")) {
-                handleError(_programConfigureGateway__return.getResult());
-            } else {
-                gatewayConfigured = true;
-            }
+            sseclient = new ServerEventsClient(gatewayURL).registerHandler("panelevent", (sseclient, e) -> {
+                handleMessageResponse((MessageResponse) JsonUtils.fromJson(e.getJson(), MessageResponse.class));
+            }).start();
+            clientsSetUp = true;
+        } catch (Exception e) {
+            logger.error("An exception occurred while setting up clients: {}", e.getMessage(), e);
+            clientsSetUp = false;
         }
     }
 
     private void establishConnection() throws Exception {
+        if (isClientsSetUp()) {
+            ConfigurePanel configurePanel = new ConfigurePanel();
+            configurePanel.setHearbeat(HEART_BEAT);
+            configurePanel.setHostaddress((String) getConfig().get(IP_ADDRESS));
+            configurePanel.setPassword("0000");
+            configurePanel.setPort(((BigDecimal) getConfig().get(PORT_NUMBER)).intValue());
+            configurePanel.setRetries(RETRIES);
+            configurePanel.setTimeout(TIME_OUT);
 
-        if (isWebServicesSetUp()) {
+            ConfigurePanelResponse panelResponse = client.post(configurePanel);
 
-            try {
-                ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
-                logger.debug("The gateway will connect to the panel at {}", getConfig().get(IP_ADDRESS));
-                ProgramConfigurePanel programConfigurePanel = new ProgramConfigurePanel();
-                programConfigurePanel.setHearbeat(HEART_BEAT);
-                programConfigurePanel.setHostaddress((String) getConfig().get(IP_ADDRESS));
-                programConfigurePanel.setPassword("0000");
-                programConfigurePanel.setPort(((BigDecimal) getConfig().get(PORT_NUMBER)).intValue());
-                programConfigurePanel.setRetries(RETRIES);
-                programConfigurePanel.setTimeout(TIME_OUT);
-                ProgramConfigurePanelResponse _programConfigurePanel__return = port
-                        .programConfigurePanel(programConfigurePanel);
-                if (_programConfigurePanel__return != null) {
-                    if (_programConfigurePanel__return.getResult() != null) {
-                        logger.debug("The gateway returned: {}", _programConfigurePanel__return.getResult());
-                        if (!_programConfigurePanel__return.getResult().equals("1")) {
-                            handleError(_programConfigurePanel__return.getResult());
-                        } else {
-                            panelConnected = true;
-                        }
+            if (panelResponse != null) {
+                if (panelResponse.getResult() != null) {
+                    logger.debug("The gateway returned: {}", panelResponse.getResult());
+                    if (!panelResponse.getResult().equals("1")) {
+                        handleError(panelResponse.getResult());
+                    } else {
+                        panelConnected = true;
                     }
                 }
-            } catch (Exception e) {
-                logger.error("An exception occurred while establishing a connection to the ATS Advanced Panel: '{}'",
-                        e.getMessage());
-                panelConnected = false;
             }
         }
-
     }
 
     private void login() {
-
-        if (isWebServicesSetUp() && isConnected()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp() && isConnected()) {
             logger.debug("The gateway will log into the panel with PIN: {}", getConfig().get(PIN));
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("userPIN");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = ((BigDecimal) getConfig().get(PIN)).toString();
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            ProgramProperty ProgramProperty2 = new ProgramProperty();
+            Property ProgramProperty2 = new Property();
             ProgramProperty2.setId("userAction_LOGREAD");
             ProgramProperty2.setIndex(0);
             java.lang.Object ProgramProperty2Value = "1";
             ProgramProperty2.setValue(ProgramProperty2Value);
-            programSendMessagePropertiesList.add(ProgramProperty2);
+            properties.add(ProgramProperty2);
 
-            ProgramProperty ProgramProperty3 = new ProgramProperty();
+            Property ProgramProperty3 = new Property();
             ProgramProperty3.setId("userAction_CTRL");
             ProgramProperty3.setIndex(0);
             java.lang.Object ProgramProperty3Value = "1";
             ProgramProperty3.setValue(ProgramProperty3Value);
-            programSendMessagePropertiesList.add(ProgramProperty3);
+            properties.add(ProgramProperty3);
 
-            ProgramProperty ProgramProperty4 = new ProgramProperty();
+            Property ProgramProperty4 = new Property();
             ProgramProperty4.setId("userAction_MONITOR");
             ProgramProperty4.setIndex(0);
             java.lang.Object ProgramProperty4Value = "1";
             ProgramProperty4.setValue(ProgramProperty4Value);
-            programSendMessagePropertiesList.add(ProgramProperty4);
+            properties.add(ProgramProperty4);
 
-            ProgramProperty ProgramProperty5 = new ProgramProperty();
+            Property ProgramProperty5 = new Property();
             ProgramProperty5.setId("userAction_DIAG");
             ProgramProperty5.setIndex(0);
             java.lang.Object ProgramProperty5Value = "1";
             ProgramProperty5.setValue(ProgramProperty5Value);
-            programSendMessagePropertiesList.add(ProgramProperty5);
+            properties.add(ProgramProperty5);
 
-            ProgramProperty ProgramProperty6 = new ProgramProperty();
+            Property ProgramProperty6 = new Property();
             ProgramProperty6.setId("userAction_UPLOAD");
             ProgramProperty6.setIndex(0);
             java.lang.Object ProgramProperty6Value = "0";
             ProgramProperty6.setValue(ProgramProperty6Value);
-            programSendMessagePropertiesList.add(ProgramProperty6);
+            properties.add(ProgramProperty6);
 
-            ProgramProperty ProgramProperty7 = new ProgramProperty();
+            Property ProgramProperty7 = new Property();
             ProgramProperty7.setId("userAction_DOWNLOAD");
             ProgramProperty7.setIndex(0);
             java.lang.Object ProgramProperty7Value = "0";
             ProgramProperty7.setValue(ProgramProperty7Value);
-            programSendMessagePropertiesList.add(ProgramProperty7);
+            properties.add(ProgramProperty7);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("device.getConnect");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("device.getConnect");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
             // request get.UserInfo to check if login is successful
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
                 userLoggedIn = true;
             }
@@ -622,71 +542,56 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     private void logout() {
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will logout");
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("device.disconnect");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("device.disconnect");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                String error = (String) _programSendMessage__return.getProperties().getProgramProperty().get(0)
-                        .getValue();
+            if (response.getName().equals("return.error")) {
+                String error = (String) response.getProperties().get(0).getValue();
                 if (StringUtils.contains(error, "FAULT_NO_ACCESS")
                         || StringUtils.contains(error, "Object reference not set to an instance of an object")) {
                     userLoggedIn = false;
                     panelConnected = false;
-                    gatewayConfigured = false;
                 }
                 handleError(error);
             } else {
                 panelConnected = false;
                 userLoggedIn = false;
-                gatewayConfigured = false;
             }
         }
     }
 
     private void openLogs() {
-
-        if (isWebServicesSetUp() && isConnected() && isLoggedIn()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp() && isConnected() && isLoggedIn()) {
             logger.debug("The gateway will open the logs");
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("open.LOG");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("open.LOG");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
                 logsOpened = true;
             }
@@ -694,67 +599,51 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     private void startMonitor() {
-
-        if (isWebServicesSetUp() && isConnected() && isLoggedIn()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp() && isConnected() && isLoggedIn()) {
             logger.debug("The gateway will start the monitor");
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("start.MONITOR");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("start.MONITOR");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.bool")) {
+            if (response.getName().equals("return.bool")) {
                 monitorStarted = true;
-                // return((boolean) Boolean.parseBoolean(Long.toString((long)
-                // _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue())));
             } else {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+                handleError((String) response.getProperties().get(0).getValue());
             }
         }
     }
 
     public boolean isAlive() {
-
-        if (isWebServicesSetUp() && isConnected() && isLoggedIn()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp() && isConnected() && isLoggedIn()) {
             logger.debug("The gateway will check if the panel is alive");
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("is.Alive");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("is.Alive");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.void")) {
+            if (response.getName().equals("return.void")) {
                 return true;
             } else {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+                handleError((String) response.getProperties().get(0).getValue());
             }
         }
 
@@ -769,37 +658,31 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     public boolean getUserPrivilege(int index) {
-        if (isWebServicesSetUp() && isConnected() && isLoggedIn()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp() && isConnected() && isLoggedIn()) {
             logger.debug("The gateway will verify the user privileges with index: {}", index);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("areaID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = index;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("get.privileges");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("get.privileges");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
                 return true;
             }
@@ -845,31 +728,25 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     public ArrayList<ZoneStatusFlags> getZoneStatus(int index) {
+        if (isClientsSetUp() && isConnected() && isLoggedIn()) {
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-        if (isWebServicesSetUp() && isConnected() && isLoggedIn()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
-
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("objectID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = index;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("getSTAT.ZONE");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("getSTAT.ZONE");
+            MessageResponse response = client.post(message);
 
             ArrayList<ZoneStatusFlags> status = new ArrayList<ZoneStatusFlags>();
 
-            if (_programSendMessage__return.getName().equals("returnSTAT.ZONE")) {
-                for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            if (response.getName().equals("returnSTAT.ZONE")) {
+                for (Property property : response.getProperties()) {
                     if (!property.getId().equals("objectID")) {
                         if ((boolean) property.getValue()) {
                             status.add(ZoneStatusFlags.valueOf(property.getId()));
@@ -878,9 +755,8 @@ public class PanelHandler extends BaseBridgeHandler {
                 }
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
                 return null;
             } else {
                 return status;
@@ -892,30 +768,24 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     public ArrayList<AreaStatusFlags> getAreaStatus(int index) {
+        if (isClientsSetUp() && isConnected() && isLoggedIn()) {
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-        if (isWebServicesSetUp() && isConnected() && isLoggedIn()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
-
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("objectID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = index;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("getSTAT.AREA");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("getSTAT.AREA");
+            MessageResponse response = client.post(message);
 
             ArrayList<AreaStatusFlags> status = new ArrayList<AreaStatusFlags>();
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 if (!property.getId().equals("objectID")) {
                     if ((boolean) property.getValue()) {
                         status.add(AreaStatusFlags.valueOf(property.getId()));
@@ -923,9 +793,8 @@ public class PanelHandler extends BaseBridgeHandler {
                 }
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
                 return null;
             } else {
                 return status;
@@ -935,101 +804,83 @@ public class PanelHandler extends BaseBridgeHandler {
         return null;
     }
 
-    public ProgramSendMessageResponse getZoneNamesChunk(int index) {
+    public MessageResponse getZoneNamesChunk(int index) {
+        try {
+            if (isClientsSetUp() && isConnected() && isLoggedIn()) {
+                Message message = new Message();
+                ArrayList<Property> properties = new ArrayList<Property>();
 
-        if (isWebServicesSetUp() && isConnected() && isLoggedIn()) {
+                Property ProgramProperty1 = new Property();
+                ProgramProperty1.setId("index");
+                ProgramProperty1.setIndex(0);
+                java.lang.Object ProgramProperty1Value = index;
+                ProgramProperty1.setValue(ProgramProperty1Value);
+                properties.add(ProgramProperty1);
 
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
+                message.setProperties(properties);
+                message.setName("select.ZoneNames");
+                MessageResponse response = client.post(message);
 
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
-
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
-            ProgramProperty1.setId("index");
-            ProgramProperty1.setIndex(0);
-            java.lang.Object ProgramProperty1Value = index;
-            ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
-
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("select.ZoneNames");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
-
-            if (_programSendMessage__return.getName().equals("return.ZoneNames")) {
-                return _programSendMessage__return;
-            } else {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+                if (response.getName().equals("return.ZoneNames")) {
+                    return response;
+                } else {
+                    handleError((String) response.getProperties().get(0).getValue());
+                }
             }
+        } catch (Exception e) {
+            logger.error("An exception occurred while getting zone names : '{}'", e.getMessage(), e);
         }
         return null;
-
     }
 
-    public ProgramSendMessageResponse getAreaNamesChunk(int index) {
+    public MessageResponse getAreaNamesChunk(int index) {
+        if (isClientsSetUp() && isConnected() && isLoggedIn()) {
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-        if (isWebServicesSetUp() && isConnected() && isLoggedIn()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
-
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("index");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = index;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("select.AreaNames");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("select.AreaNames");
+            MessageResponse response = client.post(message);
 
-            if (_programSendMessage__return.getName().equals("return.AreaNames")) {
-                return _programSendMessage__return;
+            if (response.getName().equals("return.AreaNames")) {
+                return response;
             } else {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+                handleError((String) response.getProperties().get(0).getValue());
             }
         }
         return null;
     }
 
     private BitSet getChangedAreas() {
+        if (isClientsSetUp()) {
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
-
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("getCOS.AREA");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("getCOS.AREA");
+            MessageResponse response = client.post(message);
 
             BitSet bitSet = null;
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 if (property.getId().equals("bitSet")) {
-                    bitSet = BitSet.valueOf((byte[]) property.getValue());
+                    bitSet = BitSet.valueOf(Base64.getDecoder().decode((String) property.getValue()));
                 }
             }
 
-            if (_programSendMessage__return.getName().equals("returnCOS.AREA")) {
+            if (response.getName().equals("returnCOS.AREA")) {
                 return bitSet;
-            } else if (_programSendMessage__return.getName().equals("return.void")) {
+            } else if (response.getName().equals("return.void")) {
                 return null;
             } else {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+                handleError((String) response.getProperties().get(0).getValue());
             }
         }
         return null;
@@ -1037,98 +888,90 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     private BitSet getChangedZones() {
+        if (isClientsSetUp()) {
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
-
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("getCOS.ZONE");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("getCOS.ZONE");
+            MessageResponse response = client.post(message);
 
             BitSet bitSet = null;
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 if (property.getId().equals("bitSet")) {
-                    bitSet = BitSet.valueOf((byte[]) property.getValue());
+                    bitSet = BitSet.valueOf(Base64.getDecoder().decode((String) property.getValue()));
                 }
             }
 
-            if (_programSendMessage__return.getName().equals("returnCOS.ZONE")) {
+            if (response.getName().equals("returnCOS.ZONE")) {
                 return bitSet;
-            } else if (_programSendMessage__return.getName().equals("return.void")) {
+            } else if (response.getName().equals("return.void")) {
                 return null;
             } else {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+                handleError((String) response.getProperties().get(0).getValue());
             }
         }
         return null;
 
     }
 
-    private ProgramProperty createBooleanProperty(String id, boolean value) {
-        ProgramProperty programProperty = new ProgramProperty();
+    private Property createBooleanProperty(String id, boolean value) {
+        Property programProperty = new Property();
         programProperty.setId(id);
         programProperty.setIndex(0);
-        java.lang.Object ProgramProperty1Value = value;
-        programProperty.setValue(ProgramProperty1Value);
+        // java.lang.Object ProgramProperty1Value = value;
+        if (value) {
+            // programProperty.setValue(ProgramProperty1Value);
+            programProperty.setValue(new Boolean(true));
+        } else {
+            programProperty.setValue(new Boolean(false));
+        }
         return programProperty;
     }
 
-    private ProgramSendMessageResponse getLiveEvent(boolean next) {
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+    private MessageResponse getLiveEvent(boolean next) {
+        if (isClientsSetUp()) {
             logger.debug("The gateway will fetch live events");
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            programSendMessagePropertiesList.add(createBooleanProperty("area.1", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("area.2", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("area.3", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("area.4", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("area.5", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("area.6", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("area.7", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("area.8", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatFAULT", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatMAINS", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatACTZN", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatACT24H", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatACTLCD", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatACTDEV", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatALARMS_NCNF", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatFAULTS_CNF", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatWALK_REQ", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatWALK_OK", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("evCatSYSTEM", true));
-            programSendMessagePropertiesList.add(createBooleanProperty("next", next));
+            properties.add(createBooleanProperty("area.1", true));
+            properties.add(createBooleanProperty("area.2", true));
+            properties.add(createBooleanProperty("area.3", true));
+            properties.add(createBooleanProperty("area.4", true));
+            properties.add(createBooleanProperty("area.5", true));
+            properties.add(createBooleanProperty("area.6", true));
+            properties.add(createBooleanProperty("area.7", true));
+            properties.add(createBooleanProperty("area.8", true));
+            properties.add(createBooleanProperty("evCatFAULT", true));
+            properties.add(createBooleanProperty("evCatMAINS", true));
+            properties.add(createBooleanProperty("evCatACTZN", true));
+            properties.add(createBooleanProperty("evCatACT24H", true));
+            properties.add(createBooleanProperty("evCatACTLCD", true));
+            properties.add(createBooleanProperty("evCatACTDEV", true));
+            properties.add(createBooleanProperty("evCatALARMS_NCNF", true));
+            properties.add(createBooleanProperty("evCatFAULTS_CNF", true));
+            properties.add(createBooleanProperty("evCatWALK_REQ", true));
+            properties.add(createBooleanProperty("evCatWALK_OK", true));
+            properties.add(createBooleanProperty("evCatSYSTEM", true));
+            properties.add(createBooleanProperty("next", next));
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("get.liveEvents");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("get.liveEvents");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
-                return _programSendMessage__return;
+                return response;
             }
         }
         return null;
@@ -1136,13 +979,11 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     public boolean getLiveEvents() throws ATSAdvancedException {
+        if (isClientsSetUp()) {
+            MessageResponse response = getLiveEvent(false);
 
-        if (isWebServicesSetUp()) {
-
-            ProgramSendMessageResponse _programSendMessage__return = getLiveEvent(false);
-
-            while (_programSendMessage__return.getName().equals("return.sysevent")) {
-                _programSendMessage__return = getLiveEvent(true);
+            while (response.getName().equals("return.sysevent")) {
+                response = getLiveEvent(true);
             }
 
             return true;
@@ -1153,9 +994,7 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     public boolean unsetArea(int area) {
-
         int sessionID = initiateUnsetControlSession(area);
-
         ControlSessionState state = getControlSessionState(sessionID);
 
         if (state == ControlSessionState.CSMS_UC_Ready) {
@@ -1185,21 +1024,17 @@ public class PanelHandler extends BaseBridgeHandler {
         }
 
         return false;
-
     }
 
     public boolean setArea(int area) {
-
         int sessionID = initiateSetControlSession(area);
 
         if (sessionID == 0) {
             if (StringUtils.contains(lastError, "FAULT_CC_BUSY_AREAS")) {
                 unsetArea(area);
             }
-
             return false;
         } else {
-
             ControlSessionState state = getControlSessionState(sessionID);
 
             if (state == ControlSessionState.CSMS_FC_Ready) {
@@ -1212,12 +1047,10 @@ public class PanelHandler extends BaseBridgeHandler {
             state = getControlSessionState(sessionID);
 
             while (state != ControlSessionState.CSMS_FC_Setting) {
-
                 if (state == ControlSessionState.CSMS_FC_Faults) {
                     logger.debug("There are detected faults in the system that prevents setting selected areas");
                     getFaults(sessionID);
                 }
-
                 if (state == ControlSessionState.CSMS_FC_ActiveStates) {
                     logger.debug(
                             "There are detected active states in zones or devices that prevents setting selected areas");
@@ -1225,127 +1058,106 @@ public class PanelHandler extends BaseBridgeHandler {
                 }
 
                 state = getControlSessionState(sessionID);
-
             }
 
             finishControlSession(sessionID);
-
             return true;
         }
 
     }
 
     private void getActiveZones(int sessionID) {
+        if (isClientsSetUp()) {
+            MessageResponse response = getActiveZones(sessionID, false);
 
-        if (isWebServicesSetUp()) {
-
-            ProgramSendMessageResponse _programSendMessage__return = getActiveZones(sessionID, false);
-
-            while (_programSendMessage__return.getName().equals("return.sysevent")) {
-
+            while (response.getName().equals("return.sysevent")) {
                 // inhibit the fault
                 // TODO add parameter to switch enable this - we might want to skip setting if there are active zones
-                for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+                for (Property property : response.getProperties()) {
                     if (property.getId().equals("eventUniqueID")) {
                         inhibitActiveZone(sessionID, (int) property.getValue());
                     }
                 }
 
-                _programSendMessage__return = getActiveZones(sessionID, true);
+                response = getActiveZones(sessionID, true);
             }
-
         }
     }
 
     private boolean inhibitActiveZone(int sessionID, int eventID) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will inhibit the fault with ID {} for session : {}", eventID, sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            ProgramProperty ProgramProperty2 = new ProgramProperty();
+            Property ProgramProperty2 = new Property();
             ProgramProperty2.setId("eventUniqueID");
             ProgramProperty2.setIndex(0);
             java.lang.Object ProgramProperty2Value = eventID;
             ProgramProperty2.setValue(ProgramProperty2Value);
-            programSendMessagePropertiesList.add(ProgramProperty2);
+            properties.add(ProgramProperty2);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("fnCC.A_SET_INHACTIVE");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("fnCC.A_SET_INHACTIVE");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
-                for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+                for (Property property : response.getProperties()) {
                     if (property.getId().equals("result")) {
                         return (boolean) property.getValue();
                     }
                 }
             }
         }
-
         return false;
     }
 
-    private ProgramSendMessageResponse getActiveZones(int sessionID, boolean next) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+    private MessageResponse getActiveZones(int sessionID, boolean next) {
+        if (isClientsSetUp()) {
             logger.debug("The gateway will fetch the faults for session : {}", sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessagePropertiesList.add(createBooleanProperty("next", next));
+            properties.add(createBooleanProperty("next", next));
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("fnCC.A_SET_GETACTIVE");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("fnCC.A_SET_GETACTIVE");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
-                return _programSendMessage__return;
+                return response;
             }
         }
 
@@ -1354,196 +1166,159 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     private void getFaults(int sessionID) {
+        if (isClientsSetUp()) {
+            MessageResponse response = getFaults(sessionID, false);
 
-        if (isWebServicesSetUp()) {
+            while (response.getName().equals("return.sysevent")) {
 
-            ProgramSendMessageResponse _programSendMessage__return = getFaults(sessionID, false);
-
-            while (_programSendMessage__return.getName().equals("return.sysevent")) {
-
-                for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+                for (Property property : response.getProperties()) {
                     if (property.getId().equals("eventUniqueID")) {
                         inhibitFault(sessionID, (int) property.getValue());
                     }
                 }
-
-                _programSendMessage__return = getFaults(sessionID, true);
+                response = getFaults(sessionID, true);
             }
-
         }
     }
 
     private boolean inhibitFault(int sessionID, int eventID) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will inhibit the fault with ID {} for session : {}", eventID, sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            ProgramProperty ProgramProperty2 = new ProgramProperty();
+            Property ProgramProperty2 = new Property();
             ProgramProperty2.setId("eventUniqueID");
             ProgramProperty2.setIndex(0);
             java.lang.Object ProgramProperty2Value = eventID;
             ProgramProperty2.setValue(ProgramProperty2Value);
-            programSendMessagePropertiesList.add(ProgramProperty2);
+            properties.add(ProgramProperty2);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("fnCC.A_SET_INHFAULT");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("fnCC.A_SET_INHFAULT");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
-                for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+                for (Property property : response.getProperties()) {
                     if (property.getId().equals("result")) {
                         return (boolean) property.getValue();
                     }
                 }
             }
         }
-
         return false;
     }
 
-    private ProgramSendMessageResponse getFaults(int sessionID, boolean next) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+    private MessageResponse getFaults(int sessionID, boolean next) {
+        if (isClientsSetUp()) {
             logger.debug("The gateway will fetch the faults for session : {}", sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessagePropertiesList.add(createBooleanProperty("next", next));
+            properties.add(createBooleanProperty("next", next));
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("fnCC.A_SET_GETFAULT");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("fnCC.A_SET_GETFAULT");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
-                return _programSendMessage__return;
+                return response;
             }
         }
-
         return null;
-
     }
 
     private boolean armAreas(int sessionID) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will arm the areas for session : {}", sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("fnCC.A_SET_SETAREAS");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("fnCC.A_SET_SETAREAS");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
                 return true;
             }
         }
-
         return false;
-
     }
 
     private boolean skipAlarms(int sessionID) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will arm the areas for session : {}", sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("fnCC.A_UNSET_SKIP");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("fnCC.A_UNSET_SKIP");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
                 return true;
             }
@@ -1552,38 +1327,31 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     private boolean skipFaults(int sessionID) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will arm the areas for session : {}", sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("fnCC.A_UNSET_SKIP");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("fnCC.A_UNSET_SKIP");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
                 return true;
             }
@@ -1592,38 +1360,31 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     private boolean unArmAreas(int sessionID) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will unarm the areas for session : {}", sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("fnCC.A_UNSET_UNSETAREAS");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("fnCC.A_UNSET_UNSETAREAS");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
                 return true;
             }
@@ -1632,84 +1393,68 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     private ControlSessionState getControlSessionState(int sessionID) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will fetch the control session state for session : {}", sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("statusCC.SESSION");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("statusCC.SESSION");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
-                for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+                for (Property property : response.getProperties()) {
                     if (property.getId().equals("stateID")) {
-                        return ControlSessionState.forValue((int) (long) property.getValue());
+                        return ControlSessionState.forValue((int) (double) property.getValue());
                     }
                 }
             }
         }
-
         return ControlSessionState.CSMS_UNKNOWN;
-
     }
 
     private boolean finishControlSession(int sessionID) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will finish the control session for session : {}", sessionID);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
-            ProgramProperty ProgramProperty1 = new ProgramProperty();
+            Property ProgramProperty1 = new Property();
             ProgramProperty1.setId("sessionID");
             ProgramProperty1.setIndex(0);
             java.lang.Object ProgramProperty1Value = sessionID;
             ProgramProperty1.setValue(ProgramProperty1Value);
-            programSendMessagePropertiesList.add(ProgramProperty1);
+            properties.add(ProgramProperty1);
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("destroyCC.SESSION");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("destroyCC.SESSION");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
                 return true;
             }
@@ -1718,192 +1463,151 @@ public class PanelHandler extends BaseBridgeHandler {
     }
 
     private int initiateSetControlSession(int area) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will start the set control session for area: {}", area);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
             for (int i = 1; i < MAX_NUMBER_AREAS + 1; i++) {
-                programSendMessagePropertiesList.add(createBooleanProperty("area." + i, i == area));
+                properties.add(createBooleanProperty("area." + i, i == area));
             }
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("createCC.A_SET");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("createCC.A_SET");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
-                for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+                for (Property property : response.getProperties()) {
                     if (property.getId().equals("result")) {
-                        return (int) (long) property.getValue();
+                        return (int) (double) property.getValue();
                     }
                 }
             }
         }
-
         return 0;
-
     }
 
     private int initiateUnsetControlSession(int area) {
-
-        if (isWebServicesSetUp()) {
-
-            ISyncReply port = syncReply.getBasicHttpBindingISyncReply();
-
+        if (isClientsSetUp()) {
             logger.debug("The gateway will start the unset control session for area: {}", area);
-            ProgramSendMessage programSendMessage = new ProgramSendMessage();
-            ArrayOfProgramProperty programSendMessageProperties = new ArrayOfProgramProperty();
-            List<ProgramProperty> programSendMessagePropertiesList = new ArrayList<ProgramProperty>();
+            Message message = new Message();
+            ArrayList<Property> properties = new ArrayList<Property>();
 
             for (int i = 1; i < MAX_NUMBER_AREAS + 1; i++) {
-                programSendMessagePropertiesList.add(createBooleanProperty("area." + i, i == area));
+                properties.add(createBooleanProperty("area." + i, i == area));
             }
 
-            programSendMessageProperties.getProgramProperty().addAll(programSendMessagePropertiesList);
-            programSendMessage.setProperties(programSendMessageProperties);
-            programSendMessage.setName("createCC.A_UNSET");
-            ProgramSendMessageResponse _programSendMessage__return = port.programSendMessage(programSendMessage);
+            message.setProperties(properties);
+            message.setName("createCC.A_UNSET");
+            MessageResponse response = client.post(message);
 
-            logger.debug("The gateway returned a message of type : {}", _programSendMessage__return.getName());
+            logger.debug("The gateway returned a message of type : {}", response.getName());
 
-            for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+            for (Property property : response.getProperties()) {
                 logger.debug("\t Property {} : {} : {}",
                         new Object[] { property.getId(), property.getIndex(), property.getValue() });
             }
 
-            if (_programSendMessage__return.getName().equals("return.error")) {
-                handleError(
-                        (String) _programSendMessage__return.getProperties().getProgramProperty().get(0).getValue());
+            if (response.getName().equals("return.error")) {
+                handleError((String) response.getProperties().get(0).getValue());
             } else {
-                for (ProgramProperty property : _programSendMessage__return.getProperties().getProgramProperty()) {
+                for (Property property : response.getProperties()) {
                     if (property.getId().equals("result")) {
-                        return (int) (long) property.getValue();
+                        return (int) (double) property.getValue();
                     }
                 }
             }
         }
-
         return 0;
-
     }
 
-    @WebService(name = "EventLogger", targetNamespace = "ATSAdvanced.DTO", portName = "EventLoggerPort")
-    @SOAPBinding(style = Style.DOCUMENT, use = Use.LITERAL, parameterStyle = ParameterStyle.WRAPPED)
-    public class EventLogger {
+    public void handleMessageResponse(MessageResponse message) {
 
-        @WebMethod
-        @WebResult(targetNamespace = "ATSAdvanced.DTO", name = "reponse")
-        public ProgramSendMessage logMessage(
-                @WebParam(targetNamespace = "ATSAdvanced.DTO", name = "message", mode = Mode.IN) ProgramSendMessage logEntry) {
+        ArrayList<Property> properties = message.getProperties();
 
-            ArrayOfProgramProperty logProperties = logEntry.getProperties();
-
-            switch (logEntry.getName()) {
-                case "msg.error": {
-                    handleError((String) logEntry.getProperties().getProgramProperty().get(0).getValue());
-                    break;
-                }
-                case "msgCOS.ALL": {
-                    for (ProgramProperty aProperty : logProperties.getProgramProperty()) {
-                        switch (aProperty.getId()) {
-                            case "APPOBJ_ZN": {
-                                if ((boolean) aProperty.getValue()) {
-                                    updateChangedZonesStatus();
-                                }
-                                break;
-                            }
-                            case "APPOBJ_AREA": {
-                                if ((boolean) aProperty.getValue()) {
-                                    updateChangedAreasStatus();
-                                }
-                                break;
-                            }
-                            default:
-                                break;
-                        }
-                        ;
-                    }
-                    break;
-                }
-                case "msg.MONITOR": {
-                    XMLGregorianCalendar timeStamp = null;
-                    int uniqueID = 0;
-                    int eventID = 0;
-                    int eventSource = 0;
-                    int sourceID = 0;
-                    int area = 0;
-                    String eventText = null;
-
-                    for (ProgramProperty aProperty : logProperties.getProgramProperty()) {
-                        // logger.debug("\t property {} : {}",aProperty.getId(),aProperty.getValue());
-                        if (aProperty.getId().equals("timeStamp")) {
-                            timeStamp = (XMLGregorianCalendar) aProperty.getValue();
-                        }
-                        if (aProperty.getId().equals("unique_id")) {
-                            uniqueID = (int) (long) aProperty.getValue();
-                        }
-                        if (aProperty.getId().equals("event_ID")) {
-                            eventID = (int) (long) aProperty.getValue();
-                        }
-                        if (aProperty.getId().equals("event_source")) {
-                            eventSource = (int) (long) aProperty.getValue();
-                        }
-                        if (aProperty.getId().equals("source_ID")) {
-                            sourceID = (int) (long) aProperty.getValue();
-                        }
-                        if (aProperty.getId().equals("Area")) {
-                            if (aProperty.getValue() != null) {
-                                area = (int) (long) aProperty.getValue();
-                            }
-                        }
-                        if (aProperty.getId().equals("event_text")) {
-                            eventText = (String) aProperty.getValue();
-                        }
-                    }
-
-                    String result = timeStamp.toString() + ": " + "id " + uniqueID + " :" + " event type " + eventID
-                            + " :" + " source " + eventSource + " :" + " sourceID " + sourceID + ": " + " area" + area
-                            + " :" + " detail :" + eventText;
-
-                    updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.MONITOR),
-                            (result != null) ? new StringType(result) : UnDefType.UNDEF);
-                }
-                    break;
+        switch (message.getName()) {
+            case "msg.error": {
+                handleError((String) properties.get(0).getValue());
+                break;
             }
-            ;
+            case "msgCOS.ALL": {
+                for (Property aProperty : properties) {
+                    switch (aProperty.getId()) {
+                        case "APPOBJ_ZN": {
+                            if ((boolean) aProperty.getValue()) {
+                                updateChangedZonesStatus();
+                            }
+                            break;
+                        }
+                        case "APPOBJ_AREA": {
+                            if ((boolean) aProperty.getValue()) {
+                                updateChangedAreasStatus();
+                            }
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                    ;
+                }
+                break;
+            }
+            case "msg.MONITOR": {
+                Date timeStamp = null;
+                int uniqueID = 0;
+                int eventID = 0;
+                int eventSource = 0;
+                int sourceID = 0;
+                int area = 0;
+                String eventText = null;
 
-            ProgramSendMessage ack = new ProgramSendMessage();
-            ack.setName("return.bool");
-            ArrayOfProgramProperty properties = new ArrayOfProgramProperty();
+                for (Property aProperty : properties) {
+                    logger.trace("\t property {} : {}", aProperty.getId(), aProperty.getValue());
+                    if (aProperty.getId().equals("timeStamp")) {
+                        Calendar cal = javax.xml.bind.DatatypeConverter.parseDateTime((String) aProperty.getValue());
+                        timeStamp = cal.getTime();
+                    }
+                    if (aProperty.getId().equals("unique_id")) {
+                        uniqueID = (int) (double) aProperty.getValue();
+                    }
+                    if (aProperty.getId().equals("event_ID")) {
+                        eventID = (int) (double) aProperty.getValue();
+                    }
+                    if (aProperty.getId().equals("event_source")) {
+                        eventSource = (int) (double) aProperty.getValue();
+                    }
+                    if (aProperty.getId().equals("source_ID")) {
+                        sourceID = (int) (double) aProperty.getValue();
+                    }
+                    if (aProperty.getId().equals("Area")) {
+                        if (aProperty.getValue() != null) {
+                            area = (int) (double) aProperty.getValue();
+                        }
+                    }
+                    if (aProperty.getId().equals("event_text")) {
+                        eventText = (String) aProperty.getValue();
+                    }
+                }
 
-            ProgramProperty Value1 = new ProgramProperty();
-            Value1.setId("result");
-            Value1.setIndex(0);
-            Value1.setValue(1);
+                String result = timeStamp.toString() + ": " + "id " + uniqueID + " :" + " event type " + eventID + " :"
+                        + " source " + eventSource + " :" + " sourceID " + sourceID + ": " + " area" + area + " :"
+                        + " detail :" + eventText;
 
-            properties.getProgramProperty().add(Value1);
-
-            ack.setProperties(properties);
-
-            // logger.debug("Acknowledging the event to the panel: {}",logEntry.getName());
-            return ack;
+                updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.MONITOR),
+                        (result != null) ? new StringType(result) : UnDefType.UNDEF);
+            }
+                break;
         }
+
     }
 
     private boolean handlingError = false;
@@ -1932,12 +1636,12 @@ public class PanelHandler extends BaseBridgeHandler {
         return false;
     }
 
-    class GatewayLogHangler extends LogOutputStream {
+    class GatewayLogHandler extends LogOutputStream {
 
         Logger log;
         int level;
 
-        public GatewayLogHangler(Logger log, int level) {
+        public GatewayLogHandler(Logger log, int level) {
             super(level);
             this.log = log;
         }
@@ -1947,6 +1651,9 @@ public class PanelHandler extends BaseBridgeHandler {
             switch (level) {
                 case 0: {
                     logger.debug("Gateway [DEBUG]: '{}'", line);
+                    if (line.contains("AppHost Created")) {
+                        gatewayProcessStarted = true;
+                    }
                     break;
                 }
                 case 1: {

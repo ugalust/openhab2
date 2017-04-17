@@ -1,4 +1,4 @@
-﻿namespace AtsAdvancedTest.Actions
+﻿namespace AtsAdvancedGateway.Actions
 {
     using Ace;
     using System.Text;

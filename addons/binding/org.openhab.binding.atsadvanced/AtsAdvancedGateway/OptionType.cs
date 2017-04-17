@@ -1,4 +1,4 @@
-﻿namespace AtsAdvancedTest
+﻿namespace AtsAdvancedGateway
 {
     internal enum OptionType
     {

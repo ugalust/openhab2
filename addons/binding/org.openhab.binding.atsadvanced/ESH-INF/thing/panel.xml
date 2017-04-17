@@ -30,10 +30,10 @@
                 <label>Port Number</label>
                 <description>TCP port number of the ATS Advanced panel Gateway webservice</description>
             </parameter>
-            <parameter name="eventLoggerPortNumber" type="integer"  required="true">
+<!--             <parameter name="eventLoggerPortNumber" type="integer"  required="true">
                 <label>Port Number</label>
                 <description>TCP port number of the Event Logger webservice</description>
-            </parameter>
+            </parameter> -->
             <!--             <parameter name="gatewayURL" type="text"  required="true">
                 <label>Gateway URL</label>
                 <description>The web services URL of the ATS Advanced gateway</description>

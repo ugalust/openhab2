@@ -1,4 +1,4 @@
-﻿namespace AtsAdvancedTest.Parsers
+﻿namespace AtsAdvancedGateway.Parsers
 {
     using System.Text;
 

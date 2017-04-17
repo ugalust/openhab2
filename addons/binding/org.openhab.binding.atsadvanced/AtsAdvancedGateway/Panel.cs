@@ -1,28 +1,24 @@
-﻿namespace AtsAdvancedTest
+﻿namespace AtsAdvancedGateway
 {
     using System;
-    using System.Collections.Generic;
-    using System.Linq;
 	using System.Net;
     using System.Text;
     using Ace.Ats;
     using Ace;
     using System.Diagnostics;
 	using Ace.Communication;
-	using System.Net.Sockets;
-	using System.Threading;
-	using AtsAdvancedTest.Actions;
-	using Ace.Utilities;
+	using Actions;
 
-    internal class Panel
+    public class Panel
     {
-        private IMessageFactory factory = Program.Driver.CreateFactory();
+		private IMessageFactory factory;
         private AtsAdvancedPanel panel = new AtsAdvancedPanel();
 		private TcpCommunicationChannel channel;
 
-		internal Panel(IPAddress address, int port, string password, int heartbeat, int timeout, int retries)
+		internal Panel(IPAddress address, int port, string password, int heartbeat, int timeout, int retries,IMessageDriver driver)
 		{
-			this.panel.EventMessageFactory = factory;
+			factory = driver.CreateFactory();
+			panel.EventMessageFactory = factory;
 
 			Debug.Assert (address != null, "Missing host name of the panel.");
 			Debug.Assert (port != 0, "Missing port number of the panel.");
@@ -30,25 +26,25 @@
 			Debug.Assert (timeout != 0, "Missing timeout period of the panel.");
 			Debug.Assert (retries != 0, "Missing number of retries of the panel.");
 
-			this.Hostaddress = address;
-			this.Port = port;
-			this.Password = password;
-			this.Heartbeat = heartbeat;
-			this.Timeout = timeout;
-			this.Retries = retries;
+			Hostaddress = address;
+			Port = port;
+			Password = password;
+			Heartbeat = heartbeat;
+			Timeout = timeout;
+			Retries = retries;
 
 			if (Heartbeat != -1)
 			{
-				EnablePingSettings(this.Heartbeat, this.Timeout, this.Retries);
+				EnablePingSettings(Heartbeat, Timeout, Retries);
 			}
 
-			Console.WriteLine ("Channel with host: {0}",this.Hostaddress);
-			Console.WriteLine ("Channel with port: {0}",this.Port);
-			this.channel = new TcpCommunicationChannel(this.Hostaddress, this.Port);
-			if (this.channel != null) {
+			Console.WriteLine ("Channel with host: {0}",Hostaddress);
+			Console.WriteLine ("Channel with port: {0}",Port);
+			channel = new TcpCommunicationChannel(Hostaddress, Port);
+			if (channel != null) {
 				Console.WriteLine ("Channel is not null");
 			}
-			this.panel.Open(this.channel, true);
+			panel.Open(channel, true);
 
         }
 			
@@ -63,7 +59,7 @@
 			get;
 			set;
 		}
-		public String Password
+		public string Password
 		{
 			get;
 			set;
@@ -88,44 +84,44 @@
         }
 
 		public void AddListener(IEventListener aListener) {
-			this.panel.AddListener (aListener);
+			panel.AddListener (aListener);
 		}
 
         internal void SetSerialNumber(long serialNumber)
         {
-            this.panel.SerialNumber = serialNumber;
+            panel.SerialNumber = serialNumber;
         }
 
         internal void SetEncryptionKey(byte[] key)
         {
-            this.panel.SetEncryptionKey(key);
+            panel.SetEncryptionKey(key);
         }
 
         internal void EnablePingSettings(int period, int timeout, int retries)
         {
-            this.panel.PingSettings = new PingSettings(period, timeout, retries);
+            panel.PingSettings = new PingSettings(period, timeout, retries);
         }
 
         internal IMessage CreateMessage(string name)
         {
-            return this.factory.CreateMessage(name);
+            return factory.CreateMessage(name);
         }
 
         internal IAsyncResult BeginSend(IMessage message, AsyncCallback callback, object state)
         {
-            return this.panel.BeginSend(message, this.Timeout, this.Retries, callback, state);
+            return panel.BeginSend(message, Timeout, Retries, callback, state);
         }
 
         internal IMessage EndSend(IAsyncResult ar)
         {
-            return this.panel.EndSend(ar);
+            return panel.EndSend(ar);
         }
 
         internal void AdjustFactory(DeviceDiscovery info)
         {
             try
             {
-                this.factory.SetProperty("model", 0, info.Model);
+                factory.SetProperty("model", 0, info.Model);
 				}
             catch (Exception e)
             {
@@ -134,12 +130,12 @@
 
             try
             {
-                int protocol = int.Parse(info.Version.Split('.')[1]);
+                var protocol = int.Parse(info.Version.Split('.')[1]);
                 do
                 {
                     try
                     {
-						this.factory.SetProperty("protocol", 0, protocol);
+						factory.SetProperty("protocol", 0, protocol);
 						break;
                     }
                     catch (Exception ex)
@@ -156,20 +152,20 @@
 
         internal int GetMaximumAreaIndex()
         {
-            return (int)this.factory.GetProperty("maximum-area-index", 0, typeof(int));
+            return (int)factory.GetProperty("maximum-area-index", 0, typeof(int));
         }
 
-		public String StartDiscover()
+		public string StartDiscover()
 		{
-			String feedbackMessage = "1";
+			string feedbackMessage = "1";
 
 			try
 			{
-				IMessage request = CreateMessage("device.getDescription");
+				var request = CreateMessage("device.getDescription");
 
-				IAsyncResult sendResult = BeginSend(request, null,null);
+				var sendResult = BeginSend(request, null,null);
 				sendResult.AsyncWaitHandle.WaitOne ();
-				var result = new DeviceDiscovery(this.panel.EndSend(sendResult));
+				var result = new DeviceDiscovery(panel.EndSend(sendResult));
 				sendResult.AsyncWaitHandle.Close ();
 
 				AdjustFactory(result);
@@ -177,7 +173,7 @@
 
 				if (result.EncryptionMode != 0)
 				{
-					SetEncryptionKey(new MasterKeyProvider(this.Password).GetKeyData(result.EncryptionMode));
+					SetEncryptionKey(new MasterKeyProvider(Password).GetKeyData(result.EncryptionMode));
 					byte[] sessionKey = new byte[16];
 
 					AtsUtils.FillRandomBytes(sessionKey);
@@ -187,10 +183,10 @@
 
 					sendResult = BeginSend(sessionRequest, null, null);
 					sendResult.AsyncWaitHandle.WaitOne ();
-					IMessage sessionResponse = EndSend(sendResult);
+					var sessionResponse = EndSend(sendResult);
 					sendResult.AsyncWaitHandle.Close();
 
-					int length = AtsUtils.GetEncryptionKeySize(result.EncryptionMode);
+					var length = AtsUtils.GetEncryptionKeySize(result.EncryptionMode);
 					byte[] newKey = new byte[length];
 					Buffer.BlockCopy(sessionKey, 0, newKey, 0, length / 2);
 					sessionKey = (byte[])sessionResponse.GetProperty("data", 0, typeof(byte[]));
@@ -199,10 +195,10 @@
 					var sessionEndRequest = CreateMessage("end.changeSessionKey");
 					sendResult = BeginSend(sessionEndRequest, null, null);
 					sendResult.AsyncWaitHandle.WaitOne ();
-					IMessage sessionEndresponse = EndSend(sendResult);
+					var sessionEndresponse = EndSend(sendResult);
 					sendResult.AsyncWaitHandle.Close();
 
-					this.panel.SetEncryptionKey(newKey);
+					panel.SetEncryptionKey(newKey);
 				}
 			}
 			catch (AtsFaultException e)

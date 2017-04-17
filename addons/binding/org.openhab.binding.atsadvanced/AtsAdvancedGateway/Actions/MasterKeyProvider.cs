@@ -1,4 +1,4 @@
-﻿namespace AtsAdvancedTest.Actions
+﻿namespace AtsAdvancedGateway.Actions
 {
     using System;
     using System.Diagnostics;

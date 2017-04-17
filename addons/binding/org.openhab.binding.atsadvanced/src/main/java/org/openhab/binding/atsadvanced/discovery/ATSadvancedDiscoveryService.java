@@ -22,8 +22,8 @@ import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants;
 import org.openhab.binding.atsadvanced.handler.AreaHandler;
 import org.openhab.binding.atsadvanced.handler.PanelHandler;
 import org.openhab.binding.atsadvanced.handler.ZoneHandler;
-import org.openhab.binding.atsadvanced.webservices.client.ProgramSendMessageResponse;
-import org.openhab.binding.atsadvanced.webservices.datacontract.ProgramProperty;
+import org.openhab.binding.atsadvanced.internal.PanelClient.MessageResponse;
+import org.openhab.binding.atsadvanced.internal.PanelClient.Property;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,143 +32,141 @@ import com.google.common.collect.ImmutableSet;
 /**
  * The {@link ATSadvancedDiscoveryService} is responsible for discovering a Area and Zone Things
  * of defined on the ATS Advanced Panel
- * 
+ *
  * @author Karel Goderis - Initial contribution
  */
 public class ATSadvancedDiscoveryService extends AbstractDiscoveryService {
 
-	private Logger logger = LoggerFactory.getLogger(ATSadvancedDiscoveryService.class);
+    private Logger logger = LoggerFactory.getLogger(ATSadvancedDiscoveryService.class);
 
-	public final static Set<ThingTypeUID> SUPPORTED_THING_TYPES_UIDS = ImmutableSet.of(ATSadvancedBindingConstants.THING_TYPE_AREA, ATSadvancedBindingConstants.THING_TYPE_ZONE);
-	private static int DISCOVERY_THREAD_INTERVAL = 60;
+    public final static Set<ThingTypeUID> SUPPORTED_THING_TYPES_UIDS = ImmutableSet
+            .of(ATSadvancedBindingConstants.THING_TYPE_AREA, ATSadvancedBindingConstants.THING_TYPE_ZONE);
+    private static int DISCOVERY_THREAD_INTERVAL = 60;
 
+    private PanelHandler panel;
+    private ScheduledFuture<?> discoveryJob;
 
-	private PanelHandler panel;	
-	private ScheduledFuture<?> discoveryJob;
+    public ATSadvancedDiscoveryService(PanelHandler panel) {
+        super(SUPPORTED_THING_TYPES_UIDS, 10);
+        this.panel = panel;
+    }
 
+    @Override
+    public Set<ThingTypeUID> getSupportedThingTypes() {
+        return SUPPORTED_THING_TYPES_UIDS;
+    }
 
-	public ATSadvancedDiscoveryService(PanelHandler panel) {
-		super(SUPPORTED_THING_TYPES_UIDS, 10);
-		this.panel = panel;
-	}
+    private void discoverAreasAndZones() {
 
-	public Set<ThingTypeUID> getSupportedThingTypes() {
-		return SUPPORTED_THING_TYPES_UIDS;
-	}
+        try {
+            if (panel != null && panel.isConnected() && panel.isLoggedIn() && panel.isClientsSetUp()) {
 
-	private void  discoverAreasAndZones() {
+                int current = 1;
+                logger.debug("The gateway will fetch a list of zone names");
 
-		try {
-			if(panel.isGatewayConfigured() && panel.isConnected() && panel.isLoggedIn() && panel.isWebServicesSetUp()) {
+                while (current <= ATSadvancedBindingConstants.MAX_NUMBER_ZONES) {
+                    MessageResponse result = panel.getZoneNamesChunk(current);
+                    // result should contain number of zones + 1 field for "index"
+                    if (result != null) {
+                        current = current + result.getProperties().size() - 1;
 
-				int current = 1;
-				logger.debug("The gateway will fetch a list of zone names");
+                        int resultIndex = 0;
 
-				while(current <= ATSadvancedBindingConstants.MAX_NUMBER_ZONES) {
-					ProgramSendMessageResponse result = panel.getZoneNamesChunk(current);
-					// result should contain number of zones + 1 field for "index"
-					if(result!=null) {
-						current = current + result.getProperties().getProgramProperty().size() -1 ;
+                        // do something with the result
+                        for (Property property : result.getProperties()) {
+                            if (property.getId().equals("index")) {
+                                resultIndex = Integer.parseInt(Long.toString((long) property.getValue()));
+                            }
+                        }
 
-						int resultIndex = 0;
+                        for (Property property : result.getProperties()) {
+                            if (property.getId().equals("name")) {
 
-						// do something with the result
-						for(ProgramProperty property : result.getProperties().getProgramProperty()) {
-							if(property.getId().equals("index")) {
-								resultIndex = Integer.parseInt(Long.toString((long) property.getValue()));
-							}
-						}
+                                if (!(((String) property.getValue()).equals(""))) {
 
-						for(ProgramProperty property : result.getProperties().getProgramProperty()) {
-							if(property.getId().equals("name")) {
+                                    ThingUID uid = new ThingUID(ATSadvancedBindingConstants.THING_TYPE_ZONE,
+                                            "Zone" + resultIndex);
+                                    if (uid != null) {
+                                        Map<String, Object> properties = new HashMap<>(1);
+                                        properties.put(ZoneHandler.NUMBER, String.valueOf(resultIndex));
+                                        properties.put(ZoneHandler.NAME, property.getValue());
+                                        DiscoveryResult discoveryResult = DiscoveryResultBuilder.create(uid)
+                                                .withProperties(properties).withBridge(panel.getThing().getUID())
+                                                .withLabel("ATS Advanced Panel Zone " + resultIndex).build();
+                                        thingDiscovered(discoveryResult);
+                                    }
+                                }
 
-								if(!( ((String) property.getValue()).equals("") )) {
+                                resultIndex++;
+                            }
+                        }
+                    }
+                }
 
-									ThingUID uid = new ThingUID(ATSadvancedBindingConstants.THING_TYPE_ZONE, "Zone" + resultIndex);
-									if(uid!=null) {
-										Map<String, Object> properties = new HashMap<>(1);
-										properties.put(ZoneHandler.NUMBER ,String.valueOf(resultIndex));
-										properties.put(ZoneHandler.NAME,(String) property.getValue());
-										DiscoveryResult discoveryResult = DiscoveryResultBuilder.create(uid)
-												.withProperties(properties)
-												.withBridge(panel.getThing().getUID())
-												.withLabel("ATS Advanced Panel Zone " + resultIndex)
-												.build();
-										thingDiscovered(discoveryResult);
-									}							
-								}
+                current = 1;
+                logger.debug("The gateway will fetch a list of area names");
 
-								resultIndex++;
-							}
-						}
-					}
-				}
+                while (current <= ATSadvancedBindingConstants.MAX_NUMBER_AREAS) {
+                    MessageResponse result = panel.getAreaNamesChunk(current);
+                    // result should contain number of zones + 1 field for "index"
+                    if (result != null) {
+                        current = current + result.getProperties().size() - 1;
 
-				current = 1;
-				logger.debug("The gateway will fetch a list of area names");
+                        int resultIndex = 0;
 
-				while(current <= ATSadvancedBindingConstants.MAX_NUMBER_AREAS) {
-					ProgramSendMessageResponse result = panel.getAreaNamesChunk(current);
-					// result should contain number of zones + 1 field for "index"
-					if(result!=null) {
-						current = current + result.getProperties().getProgramProperty().size() -1 ;
+                        // do something with the result
+                        for (Property property : result.getProperties()) {
+                            if (property.getId().equals("index")) {
+                                resultIndex = Integer.parseInt(Long.toString((long) property.getValue()));
+                            }
+                        }
 
-						int resultIndex = 0;
+                        for (Property property : result.getProperties()) {
+                            if (property.getId().equals("name")) {
 
-						// do something with the result
-						for(ProgramProperty property : result.getProperties().getProgramProperty()) {
-							if(property.getId().equals("index")) {
-								resultIndex = Integer.parseInt(Long.toString((long) property.getValue()));
-							}
-						}
+                                if (!(((String) property.getValue()).equals(""))) {
 
-						for(ProgramProperty property : result.getProperties().getProgramProperty()) {
-							if(property.getId().equals("name")) {
+                                    ThingUID uid = new ThingUID(ATSadvancedBindingConstants.THING_TYPE_AREA,
+                                            "Area" + resultIndex);
+                                    if (uid != null) {
+                                        Map<String, Object> properties = new HashMap<>(1);
+                                        properties.put(AreaHandler.NUMBER, String.valueOf(resultIndex));
+                                        properties.put(AreaHandler.NAME, property.getValue());
+                                        DiscoveryResult discoveryResult = DiscoveryResultBuilder.create(uid)
+                                                .withProperties(properties).withBridge(panel.getThing().getUID())
+                                                .withLabel("ATS Advanced Panel Area " + resultIndex).build();
+                                        thingDiscovered(discoveryResult);
+                                    }
+                                }
+                                resultIndex++;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.error("An exception occurred while discovering an ATS Advanced Panel: '{}'", e.getMessage());
+        }
+    }
 
-								if(!( ((String) property.getValue()).equals("") )) {
+    private Runnable discoveryRunnable = new Runnable() {
+        @Override
+        public void run() {
+            discoverAreasAndZones();
+        }
+    };
 
-									ThingUID uid = new ThingUID(ATSadvancedBindingConstants.THING_TYPE_AREA, "Area" + resultIndex);
-									if(uid!=null) {
-										Map<String, Object> properties = new HashMap<>(1);
-										properties.put(AreaHandler.NUMBER ,String.valueOf(resultIndex));
-										properties.put(AreaHandler.NAME,(String) property.getValue());
-										DiscoveryResult discoveryResult = DiscoveryResultBuilder.create(uid)
-												.withProperties(properties)
-												.withBridge(panel.getThing().getUID())
-												.withLabel("ATS Advanced Panel Area " + resultIndex)
-												.build();
-										thingDiscovered(discoveryResult);
-									}
-								}
-								resultIndex++;
-							}
-						}
-					}
-				}
-			}
-		}	
-		catch(Exception e) {
-			logger.error("An exception occurred while discovering an ATS Advanced Panel: '{}'",e.getMessage());
-		}
-	}
+    @Override
+    protected void startBackgroundDiscovery() {
+        if (discoveryJob == null || discoveryJob.isCancelled()) {
+            discoveryJob = scheduler.scheduleAtFixedRate(discoveryRunnable, 1, DISCOVERY_THREAD_INTERVAL,
+                    TimeUnit.SECONDS);
+        }
+    }
 
-	private Runnable discoveryRunnable = new Runnable() {
-		@Override
-		public void run() {
-			discoverAreasAndZones();
-		}
-	};
-
-	@Override
-	protected void startBackgroundDiscovery() {
-		if (discoveryJob == null || discoveryJob.isCancelled()) {
-			discoveryJob = scheduler.scheduleAtFixedRate(discoveryRunnable, 1, DISCOVERY_THREAD_INTERVAL, TimeUnit.SECONDS);
-		}
-	}
-
-	@Override
-	protected void startScan() {
-		discoverAreasAndZones();
-	}
+    @Override
+    protected void startScan() {
+        discoverAreasAndZones();
+    }
 
 }

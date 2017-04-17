@@ -13,9 +13,10 @@ import org.eclipse.smarthome.core.thing.binding.ThingHandler;
 import org.eclipse.smarthome.core.types.Command;
 import org.eclipse.smarthome.core.types.RefreshType;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants;
+import org.openhab.binding.atsadvanced.PanelStatusListener;
 import org.openhab.binding.atsadvanced.ATSadvancedBindingConstants.AreaStatusFlags;
-import org.openhab.binding.atsadvanced.webservices.client.ProgramSendMessageResponse;
-import org.openhab.binding.atsadvanced.webservices.datacontract.ProgramProperty;
+import org.openhab.binding.atsadvanced.internal.PanelClient.MessageResponse;
+import org.openhab.binding.atsadvanced.internal.PanelClient.Property;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +31,7 @@ public class AreaHandler extends BaseThingHandler implements PanelStatusListener
     private PanelHandler bridgeHandler;
     private ArrayList<AreaStatusFlags> previousStatus = new ArrayList<AreaStatusFlags>();
     private ArrayList<AreaStatusFlags> lastStatus = new ArrayList<AreaStatusFlags>();
+    private boolean inErrorState = false;
 
     public AreaHandler(Thing thing) {
         super(thing);
@@ -138,10 +140,13 @@ public class AreaHandler extends BaseThingHandler implements PanelStatusListener
     @Override
     public void onChangedStatus() {
         if (getThing().getStatus() == ThingStatus.ONLINE) {
-
             previousStatus = lastStatus;
-            ArrayList<AreaStatusFlags> result = getBridgeHandler()
-                    .getAreaStatus(((BigDecimal) getConfig().get(NUMBER)).intValue());
+            ArrayList<AreaStatusFlags> result = null;
+            if (!inErrorState) {
+                result = getBridgeHandler().getAreaStatus(((BigDecimal) getConfig().get(NUMBER)).intValue());
+            } else {
+                logger.warn("Area '{}' is in an error state, do you have access?", getConfig().get(NAME));
+            }
 
             if (result != null) {
 
@@ -185,6 +190,8 @@ public class AreaHandler extends BaseThingHandler implements PanelStatusListener
                 if (!isExit() && !wasExit()) {
                     updateState(new ChannelUID(getThing().getUID(), ATSadvancedBindingConstants.EXIT), OnOffType.OFF);
                 }
+            } else {
+                inErrorState = true;
             }
         }
     }
@@ -201,11 +208,10 @@ public class AreaHandler extends BaseThingHandler implements PanelStatusListener
         if ((String) getConfig().get(NAME) == null && getThing().getStatus() == ThingStatus.ONLINE) {
             PanelHandler panel = getBridgeHandler();
 
-            ProgramSendMessageResponse result = panel
-                    .getAreaNamesChunk(((BigDecimal) getConfig().get(NUMBER)).intValue());
+            MessageResponse result = panel.getAreaNamesChunk(((BigDecimal) getConfig().get(NUMBER)).intValue());
 
             if (result != null) {
-                for (ProgramProperty property : result.getProperties().getProgramProperty()) {
+                for (Property property : result.getProperties()) {
                     if (property.getId().equals("name")) {
                         if (!(((String) property.getValue()).equals(""))) {
                             getThing().getConfiguration().put(NAME, property.getValue());

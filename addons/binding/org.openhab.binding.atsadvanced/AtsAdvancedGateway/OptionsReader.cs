@@ -1,10 +1,10 @@
-﻿namespace AtsAdvancedTest
+﻿namespace AtsAdvancedGateway
 {
     using System;
     using System.Diagnostics;
-    using AtsAdvancedTest.Parsers;
+    using Parsers;
 
-    internal class OptionsReader
+    public class OptionsReader
     {
         private readonly int shift;
         private readonly string[] args;
