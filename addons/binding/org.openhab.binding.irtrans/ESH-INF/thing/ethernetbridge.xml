@@ -25,7 +25,7 @@
 			<parameter name="refreshInterval" type="integer" required="false">
 				<label>Refresh interval</label>
 				<description>Specifies the refresh interval in milliseconds.</description>
-				<default>50</default>
+				<default>100</default>
 			</parameter>
 			<parameter name="responseTimeOut" type="integer" required="false">
 				<label>Response time out interval</label>

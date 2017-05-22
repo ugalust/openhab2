@@ -34,6 +34,11 @@ public class IRtransBindingConstants {
     public static final String BLASTER_CHANNEL_TYPE = "Blaster";
     public static final String RECEIVER_CHANNEL_TYPE = "Receiver";
 
+    // List of constants shared throughout the binding
+    public static final String COMMAND = "command";
+    public static final String LED = "led";
+    public static final String REMOTE = "remote";
+
     // List of possible leds on a IRtrans transceiver
     public enum Led {
         DEFAULT("D"),

@@ -36,7 +36,7 @@
 
 	<channel-type id="io">
 		<item-type>String</item-type>
-		<label>Input/Output channel for infrared  commands</label>
+		<label>Input/Output channel for infrared commands</label>
 		<description>The IO channel allows to read infrared commands received by the blaster, as well as to write infrared commands to be sent by the blaster</description>
 	</channel-type>
 

@@ -20,7 +20,6 @@ import java.nio.channels.NoConnectionPendingException;
 import java.nio.channels.NotYetConnectedException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
-import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Collection;
 import java.util.HashSet;
@@ -44,12 +43,13 @@ import org.eclipse.smarthome.core.thing.Bridge;
 import org.eclipse.smarthome.core.thing.Channel;
 import org.eclipse.smarthome.core.thing.ChannelUID;
 import org.eclipse.smarthome.core.thing.ThingStatus;
+import org.eclipse.smarthome.core.thing.ThingStatusDetail;
 import org.eclipse.smarthome.core.thing.binding.BaseBridgeHandler;
 import org.eclipse.smarthome.core.types.Command;
 import org.eclipse.smarthome.core.types.RefreshType;
-import org.openhab.binding.irtrans.IRcommand;
 import org.openhab.binding.irtrans.IRtransBindingConstants;
 import org.openhab.binding.irtrans.IRtransBindingConstants.Led;
+import org.openhab.binding.irtrans.IrCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,30 +75,28 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
     public static final String RECONNECT_INTERVAL = "reconnectInterval";
     public static final String REFRESH_INTERVAL = "refreshInterval";
     public static final String RESPONSE_TIME_OUT = "responseTimeOut";
-    public static final String COMMAND = "command";
-    public static final String LED = "led";
-    public static final String REMOTE = "remote";
 
     private Logger logger = LoggerFactory.getLogger(EthernetBridgeHandler.class);
 
     private Selector selector;
     private SocketChannel socketChannel;
     protected SelectionKey socketChannelKey;
-    protected ServerSocketChannel listenerChannel;
-    protected SelectionKey listenerKey;
     protected boolean previousConnectionState;
     private final Lock lock = new ReentrantLock();
 
     private List<TransceiverStatusListener> transceiverStatusListeners = new CopyOnWriteArrayList<>();
 
     private ScheduledFuture<?> pollingJob;
+    private final Pattern responsePattern = Pattern.compile("..(\\d{5}) (.*)", Pattern.DOTALL);
+    private final Pattern hexPattern = Pattern.compile("RCV_HEX (.*)");
+    private final Pattern irdbPattern = Pattern.compile("RCV_COM (.*),(.*),(.*),(.*)");
 
     /**
      * Data structure to store the infrared commands that are 'loaded' from the
      * configuration files. Command loading from pre-defined configuration files is not supported
      * (anymore), but the code is maintained in case this functionality is re-added in the future
      **/
-    protected final Collection<IRcommand> irCommands = new HashSet<IRcommand>();
+    protected final Collection<IrCommand> irCommands = new HashSet<IrCommand>();
 
     public EthernetBridgeHandler(Bridge bridge) {
         super(bridge);
@@ -118,21 +116,24 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
                             String remoteName = StringUtils.substringBefore(command.toString(), ",");
                             String irCommandName = StringUtils.substringAfter(command.toString(), ",");
 
-                            IRcommand ircommand = new IRcommand();
-                            ircommand.remote = remoteName;
-                            ircommand.command = irCommandName;
+                            IrCommand ircommand = new IrCommand();
+                            ircommand.setRemote(remoteName);
+                            ircommand.setCommand(irCommandName);
 
-                            IRcommand thingCompatibleCommand = new IRcommand();
-                            thingCompatibleCommand.remote = (String) channelConfiguration.get(REMOTE);
-                            thingCompatibleCommand.command = (String) channelConfiguration.get(COMMAND);
+                            IrCommand thingCompatibleCommand = new IrCommand();
+                            thingCompatibleCommand
+                                    .setRemote((String) channelConfiguration.get(IRtransBindingConstants.REMOTE));
+                            thingCompatibleCommand
+                                    .setCommand((String) channelConfiguration.get(IRtransBindingConstants.COMMAND));
 
                             if (ircommand.matches(thingCompatibleCommand)) {
-                                if (sendIRcommand(ircommand, Led.get((String) channelConfiguration.get(LED)))) {
+                                if (sendIRcommand(ircommand,
+                                        Led.get((String) channelConfiguration.get(IRtransBindingConstants.LED)))) {
                                     logger.debug("Sent a matching infrared command '{}' for channel '{}'", command,
                                             channelUID);
                                 } else {
                                     logger.warn(
-                                            "An error occured whilst sending the infrared command '{}' for Channel '{}'",
+                                            "An error occurred whilst sending the infrared command '{}' for Channel '{}'",
                                             command, channelUID);
                                 }
                             }
@@ -166,10 +167,7 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
                 onUpdate();
             } else {
                 logger.warn("Cannot connect to IRtrans Ethernet device. IP address or port number not set.");
-            }
-
-            if (getConfig().get(IS_LISTENER) != null) {
-                configureListener((String) getConfig().get(LISTENER_PORT));
+                updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.CONFIGURATION_ERROR);
             }
         }
     }
@@ -240,29 +238,6 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
         }
     }
 
-    private void configureListener(String listenerPort) {
-        try {
-            listenerChannel = ServerSocketChannel.open();
-            listenerChannel.socket().bind(new InetSocketAddress(Integer.parseInt(listenerPort)));
-            listenerChannel.configureBlocking(false);
-
-            logger.info("Listening for incoming connections on {}", listenerChannel.getLocalAddress());
-
-            synchronized (selector) {
-                selector.wakeup();
-                try {
-                    listenerKey = listenerChannel.register(selector, SelectionKey.OP_ACCEPT);
-                } catch (ClosedChannelException e1) {
-                    logger.error("An exception occurred while registering a selector: '{}'", e1.getMessage());
-                }
-            }
-        } catch (IOException e3) {
-            logger.error(
-                    "An exception occurred while creating configuring the listener channel on port number {}: '{}'",
-                    Integer.parseInt(listenerPort), e3.getMessage());
-        }
-    }
-
     protected void configureTransceiver(SocketChannel socketChannel) {
         lock.lock();
         try {
@@ -311,7 +286,7 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
 
                     // get remote commands
                     String[] commands = getRemoteCommands(remote, 0);
-                    String resultString = new String();
+                    StringBuilder result = new StringBuilder();
                     int numberOfCommands = 0;
                     int numberOfCommandsInBatch = 0;
                     int numberOfCommandsProcessed = 0;
@@ -325,10 +300,10 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
                     while (numberOfCommandsProcessed < numberOfCommands) {
                         for (int j = 1; j <= numberOfCommandsInBatch; j++) {
                             String command = commands[2 + j];
-                            resultString = resultString + command;
+                            result.append(command);
                             numberOfCommandsProcessed++;
                             if (numberOfCommandsProcessed < numberOfCommands) {
-                                resultString = resultString + ", ";
+                                result.append(", ");
                             }
                         }
 
@@ -345,7 +320,7 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
                     }
 
                     logger.info("The remote '{}' on '{}' supports '{}' commands: {}", remote, getThing().getUID(),
-                            numberOfCommands, resultString);
+                            numberOfCommands, result.toString());
 
                     numberOfRemotesProcessed++;
                 }
@@ -447,10 +422,6 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
             socketChannel.socket().setKeepAlive(true);
             socketChannel.configureBlocking(false);
 
-            while (selector == null) {
-                Thread.sleep(100);
-            }
-
             synchronized (selector) {
                 selector.wakeup();
                 int interestSet = SelectionKey.OP_READ | SelectionKey.OP_WRITE | SelectionKey.OP_CONNECT;
@@ -463,9 +434,6 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
         } catch (IOException e) {
             logger.error("An exception occurred while connecting connecting to '{}:{}' : {}", ipAddress, portNumber,
                     e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            logger.error("An exception occurred while putting the Thread to sleep: {}", e.getMessage(), e);
         }
 
         return socketChannel;
@@ -477,44 +445,6 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
             socketChannel.close();
         } catch (IOException e) {
             logger.warn("An exception occurred while closing the channel '{}': {}", socketChannel, e.getMessage());
-        }
-    }
-
-    protected void onAcceptable(ServerSocketChannel listenerChannel) {
-        lock.lock();
-        try {
-            synchronized (selector) {
-                try {
-                    selector.selectNow();
-                } catch (IOException e) {
-                    logger.error("An exception occurred while selecting: {}", e.getMessage());
-                }
-            }
-
-            Iterator<SelectionKey> it = selector.selectedKeys().iterator();
-            while (it.hasNext()) {
-                SelectionKey selKey = it.next();
-                it.remove();
-                if (selKey.isValid()) {
-                    if (selKey.isAcceptable() && selKey == listenerChannel.keyFor(selector)) {
-                        try {
-                            SocketChannel newChannel = listenerChannel.accept();
-                            newChannel.configureBlocking(false);
-                            logger.trace("Received a connection request from '{}'", newChannel.getRemoteAddress());
-
-                            synchronized (selector) {
-                                selector.wakeup();
-                                newChannel.register(selector, newChannel.validOps());
-                            }
-                        } catch (IOException e) {
-                            logger.error("An exception occurred while accepting a connection on channel '{}': {}",
-                                    listenerChannel, e.getMessage());
-                        }
-                    }
-                }
-            }
-        } finally {
-            lock.unlock();
         }
     }
 
@@ -661,12 +591,10 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
     }
 
     protected int getByteCount(ByteBuffer byteBuffer) {
-        Pattern reponsePattern = Pattern.compile("..(\\d{5}) (.*)", Pattern.DOTALL);
-
         String response = new String(byteBuffer.array(), byteBuffer.position(), byteBuffer.limit());
         response = StringUtils.chomp(response);
 
-        Matcher matcher = reponsePattern.matcher(response);
+        Matcher matcher = responsePattern.matcher(response);
         if (matcher.matches()) {
             return Integer.parseInt(matcher.group(1));
         }
@@ -675,7 +603,6 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
     }
 
     protected String stripByteCount(ByteBuffer byteBuffer) {
-        Pattern responsePattern = Pattern.compile("..(\\d{5}) (.*)", Pattern.DOTALL);
         String message = null;
 
         String response = new String(byteBuffer.array(), 0, byteBuffer.limit());
@@ -691,7 +618,7 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
         return message;
     }
 
-    public boolean sendIRcommand(IRcommand command, Led led) {
+    public boolean sendIRcommand(IrCommand command, Led led) {
         // construct the string we need to send to the IRtrans device
         String output = packIRDBCommand(led, command);
 
@@ -720,14 +647,13 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
     }
 
     protected void parseHexMessage(String message) {
-        Pattern hexPattern = Pattern.compile("RCV_HEX (.*)");
         Matcher matcher = hexPattern.matcher(message);
 
         if (matcher.matches()) {
             String command = matcher.group(1);
 
-            IRcommand theCommand = null;
-            for (IRcommand aCommand : irCommands) {
+            IrCommand theCommand = null;
+            for (IrCommand aCommand : irCommands) {
                 if (aCommand.sequenceToHEXString().equals(command)) {
                     theCommand = aCommand;
                     break;
@@ -748,13 +674,12 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
     }
 
     protected void parseIRDBMessage(String message) {
-        Pattern irdbPattern = Pattern.compile("RCV_COM (.*),(.*),(.*),(.*)");
         Matcher matcher = irdbPattern.matcher(message);
 
         if (matcher.matches()) {
-            IRcommand command = new IRcommand();
-            command.remote = matcher.group(1);
-            command.command = matcher.group(2);
+            IrCommand command = new IrCommand();
+            command.setRemote(matcher.group(1));
+            command.setCommand(matcher.group(2));
 
             for (TransceiverStatusListener listener : transceiverStatusListeners) {
                 listener.onCommandReceived(this, command);
@@ -774,13 +699,13 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
      *            the the command
      * @return a string which is the full command to be sent to the device
      */
-    protected String packIRDBCommand(Led led, IRcommand command) {
+    protected String packIRDBCommand(Led led, IrCommand command) {
         String output = new String();
 
         output = "Asnd ";
-        output += command.remote;
+        output += command.getRemote();
         output += ",";
-        output += command.command;
+        output += command.getCommand();
         output += ",l";
         output += led.toString();
 
@@ -798,7 +723,7 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
      *            the the command
      * @return a string which is the full command to be sent to the device
      */
-    protected String packHexCommand(Led led, IRcommand command) {
+    protected String packHexCommand(Led led, IrCommand command) {
         String output = new String();
 
         output = "Asndhex ";
@@ -910,7 +835,7 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
                     }
                 }
 
-                onAcceptable(listenerChannel);
+                // onAcceptable(listenerChannel);
 
             } catch (IOException e) {
                 logger.trace("An exception occurred while polling the transceiver : '{}'", e.getMessage(), e);
@@ -949,21 +874,21 @@ public class EthernetBridgeHandler extends BaseBridgeHandler implements Transcei
     }
 
     @Override
-    public void onCommandReceived(EthernetBridgeHandler bridge, IRcommand command) {
+    public void onCommandReceived(EthernetBridgeHandler bridge, IrCommand command) {
 
-        logger.debug("Received infrared command '{},{}' for thing '{}'", command.remote, command.command,
+        logger.debug("Received infrared command '{},{}' for thing '{}'", command.getRemote(), command.getCommand(),
                 this.getThing().getUID());
 
         for (Channel channel : getThing().getChannels()) {
             Configuration channelConfiguration = channel.getConfiguration();
 
             if (channel.getAcceptedItemType().equals(IRtransBindingConstants.RECEIVER_CHANNEL_TYPE)) {
-                IRcommand thingCompatibleCommand = new IRcommand();
-                thingCompatibleCommand.remote = (String) channelConfiguration.get(REMOTE);
-                thingCompatibleCommand.command = (String) channelConfiguration.get(COMMAND);
+                IrCommand thingCompatibleCommand = new IrCommand();
+                thingCompatibleCommand.setRemote((String) channelConfiguration.get(IRtransBindingConstants.REMOTE));
+                thingCompatibleCommand.setCommand((String) channelConfiguration.get(IRtransBindingConstants.COMMAND));
 
                 if (command.matches(thingCompatibleCommand)) {
-                    StringType stringType = new StringType(command.remote + "," + command.command);
+                    StringType stringType = new StringType(command.getRemote() + "," + command.getCommand());
                     logger.debug("Received a matching infrared command '{}' for channel '{}'", stringType,
                             channel.getUID());
                     updateState(channel.getUID(), stringType);

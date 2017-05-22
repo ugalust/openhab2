@@ -20,8 +20,9 @@ import org.eclipse.smarthome.core.thing.ThingStatusDetail;
 import org.eclipse.smarthome.core.thing.binding.BaseThingHandler;
 import org.eclipse.smarthome.core.types.Command;
 import org.eclipse.smarthome.core.types.RefreshType;
-import org.openhab.binding.irtrans.IRcommand;
+import org.openhab.binding.irtrans.IRtransBindingConstants;
 import org.openhab.binding.irtrans.IRtransBindingConstants.Led;
+import org.openhab.binding.irtrans.IrCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,9 +37,6 @@ import org.slf4j.LoggerFactory;
 public class BlasterHandler extends BaseThingHandler implements TransceiverStatusListener {
 
     // List of Configuration constants
-    public static final String COMMAND = "command";
-    public static final String LED = "led";
-    public static final String REMOTE = "remote";
 
     private Logger logger = LoggerFactory.getLogger(BlasterHandler.class);
 
@@ -73,16 +71,17 @@ public class BlasterHandler extends BaseThingHandler implements TransceiverStatu
                     String remoteName = StringUtils.substringBefore(command.toString(), ",");
                     String irCommandName = StringUtils.substringAfter(command.toString(), ",");
 
-                    IRcommand ircommand = new IRcommand();
-                    ircommand.remote = remoteName;
-                    ircommand.command = irCommandName;
+                    IrCommand ircommand = new IrCommand();
+                    ircommand.setRemote(remoteName);
+                    ircommand.setCommand(irCommandName);
 
-                    IRcommand thingCompatibleCommand = new IRcommand();
-                    thingCompatibleCommand.remote = (String) getConfig().get(REMOTE);
-                    thingCompatibleCommand.command = (String) getConfig().get(COMMAND);
+                    IrCommand thingCompatibleCommand = new IrCommand();
+                    thingCompatibleCommand.setRemote((String) getConfig().get(IRtransBindingConstants.REMOTE));
+                    thingCompatibleCommand.setCommand((String) getConfig().get(IRtransBindingConstants.COMMAND));
 
                     if (ircommand.matches(thingCompatibleCommand)) {
-                        if (!ethernetBridge.sendIRcommand(ircommand, Led.get((String) getConfig().get(LED)))) {
+                        if (!ethernetBridge.sendIRcommand(ircommand,
+                                Led.get((String) getConfig().get(IRtransBindingConstants.LED)))) {
                             logger.warn("An error occured whilst sending the infrared command '{}' for Channel '{}'",
                                     ircommand, channelUID);
                         }
@@ -93,17 +92,18 @@ public class BlasterHandler extends BaseThingHandler implements TransceiverStatu
     }
 
     @Override
-    public void onCommandReceived(EthernetBridgeHandler bridge, IRcommand command) {
+    public void onCommandReceived(EthernetBridgeHandler bridge, IrCommand command) {
 
-        logger.debug("Received command {},{} for thing {}", command.remote, command.command, this.getThing().getUID());
+        logger.debug("Received command {},{} for thing {}", command.getRemote(), command.getCommand(),
+                this.getThing().getUID());
 
-        IRcommand thingCompatibleCommand = new IRcommand();
-        thingCompatibleCommand.remote = (String) getConfig().get(REMOTE);
-        thingCompatibleCommand.command = (String) getConfig().get(COMMAND);
+        IrCommand thingCompatibleCommand = new IrCommand();
+        thingCompatibleCommand.setRemote((String) getConfig().get(IRtransBindingConstants.REMOTE));
+        thingCompatibleCommand.setCommand((String) getConfig().get(IRtransBindingConstants.COMMAND));
 
         if (command.matches(thingCompatibleCommand)) {
-            StringType stringType = new StringType(command.remote + "," + command.command);
-            updateState(new ChannelUID(getThing().getUID(), CHANNEL_IO), stringType);
+            StringType stringType = new StringType(command.getRemote() + "," + command.getCommand());
+            updateState(CHANNEL_IO, stringType);
         }
 
     }

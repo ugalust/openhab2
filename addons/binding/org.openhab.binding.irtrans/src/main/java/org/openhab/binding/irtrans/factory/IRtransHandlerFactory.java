@@ -79,7 +79,7 @@ public class IRtransHandlerFactory extends BaseThingHandlerFactory {
 
     private ThingUID getBlasterUID(ThingTypeUID thingTypeUID, ThingUID thingUID, Configuration configuration,
             ThingUID bridgeUID) {
-        String ledId = (String) configuration.get(BlasterHandler.LED);
+        String ledId = (String) configuration.get(IRtransBindingConstants.LED);
 
         if (thingUID == null) {
             thingUID = new ThingUID(thingTypeUID, "Led" + ledId, bridgeUID.getId());

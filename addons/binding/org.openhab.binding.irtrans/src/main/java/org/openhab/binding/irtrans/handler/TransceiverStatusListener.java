@@ -8,7 +8,7 @@
  */
 package org.openhab.binding.irtrans.handler;
 
-import org.openhab.binding.irtrans.IRcommand;
+import org.openhab.binding.irtrans.IrCommand;
 
 /**
  * The {@link TransceiverStatusListener} is interface that is to be implemented
@@ -28,7 +28,7 @@ public interface TransceiverStatusListener {
      * @param bridge
      * @param command - the infrared command
      */
-    public void onCommandReceived(EthernetBridgeHandler bridge, IRcommand command);
+    public void onCommandReceived(EthernetBridgeHandler bridge, IrCommand command);
 
     /**
      *

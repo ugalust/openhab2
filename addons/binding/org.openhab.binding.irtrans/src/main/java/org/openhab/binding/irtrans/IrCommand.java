@@ -11,22 +11,23 @@ package org.openhab.binding.irtrans;
 
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The {@link IRcommand} is a structure to store and manipulate infrared command
+ * The {@link IrCommand} is a structure to store and manipulate infrared command
  * in various formats
  *
  * @author Karel Goderis - Initial contribution
  * @since 2.1.0
  *
  */
-public class IRcommand {
+public class IrCommand {
 
-    private Logger logger = LoggerFactory.getLogger(IRcommand.class);
+    private Logger logger = LoggerFactory.getLogger(IrCommand.class);
 
     /**
      *
@@ -43,19 +44,215 @@ public class IRcommand {
         public int Pause;
     }
 
-    public String remote;
-    public String command;
-    public String sequence;
-    public ArrayList<PulsePair> pulsePairs;
-    public int numberOfRepeats;
-    public int frequency;
-    public int frameLength;
-    public int pause;
-    public boolean startBit;
-    public boolean repeatStartBit;
-    public boolean noTog;
-    public boolean rc5;
-    public boolean rc6;
+    private String remote;
+    private String command;
+    private String sequence;
+    private List<PulsePair> pulsePairs;
+    private int numberOfRepeats;
+    private int frequency;
+    private int frameLength;
+    private int pause;
+    private boolean startBit;
+    private boolean repeatStartBit;
+    private boolean noTog;
+    private boolean rc5;
+    private boolean rc6;
+
+    /**
+     * @return the logger
+     */
+    public Logger getLogger() {
+        return logger;
+    }
+
+    /**
+     * @param logger the logger to set
+     */
+    public void setLogger(Logger logger) {
+        this.logger = logger;
+    }
+
+    /**
+     * @return the remote
+     */
+    public String getRemote() {
+        return remote;
+    }
+
+    /**
+     * @param remote the remote to set
+     */
+    public void setRemote(String remote) {
+        this.remote = remote;
+    }
+
+    /**
+     * @return the command
+     */
+    public String getCommand() {
+        return command;
+    }
+
+    /**
+     * @param command the command to set
+     */
+    public void setCommand(String command) {
+        this.command = command;
+    }
+
+    /**
+     * @return the sequence
+     */
+    public String getSequence() {
+        return sequence;
+    }
+
+    /**
+     * @param sequence the sequence to set
+     */
+    public void setSequence(String sequence) {
+        this.sequence = sequence;
+    }
+
+    /**
+     * @return the pulsePairs
+     */
+    public List<PulsePair> getPulsePairs() {
+        return pulsePairs;
+    }
+
+    /**
+     * @param pulsePairs the pulsePairs to set
+     */
+    public void setPulsePairs(List<PulsePair> pulsePairs) {
+        this.pulsePairs = pulsePairs;
+    }
+
+    /**
+     * @return the numberOfRepeats
+     */
+    public int getNumberOfRepeats() {
+        return numberOfRepeats;
+    }
+
+    /**
+     * @param numberOfRepeats the numberOfRepeats to set
+     */
+    public void setNumberOfRepeats(int numberOfRepeats) {
+        this.numberOfRepeats = numberOfRepeats;
+    }
+
+    /**
+     * @return the frequency
+     */
+    public int getFrequency() {
+        return frequency;
+    }
+
+    /**
+     * @param frequency the frequency to set
+     */
+    public void setFrequency(int frequency) {
+        this.frequency = frequency;
+    }
+
+    /**
+     * @return the frameLength
+     */
+    public int getFrameLength() {
+        return frameLength;
+    }
+
+    /**
+     * @param frameLength the frameLength to set
+     */
+    public void setFrameLength(int frameLength) {
+        this.frameLength = frameLength;
+    }
+
+    /**
+     * @return the pause
+     */
+    public int getPause() {
+        return pause;
+    }
+
+    /**
+     * @param pause the pause to set
+     */
+    public void setPause(int pause) {
+        this.pause = pause;
+    }
+
+    /**
+     * @return the startBit
+     */
+    public boolean isStartBit() {
+        return startBit;
+    }
+
+    /**
+     * @param startBit the startBit to set
+     */
+    public void setStartBit(boolean startBit) {
+        this.startBit = startBit;
+    }
+
+    /**
+     * @return the repeatStartBit
+     */
+    public boolean isRepeatStartBit() {
+        return repeatStartBit;
+    }
+
+    /**
+     * @param repeatStartBit the repeatStartBit to set
+     */
+    public void setRepeatStartBit(boolean repeatStartBit) {
+        this.repeatStartBit = repeatStartBit;
+    }
+
+    /**
+     * @return the noTog
+     */
+    public boolean isNoTog() {
+        return noTog;
+    }
+
+    /**
+     * @param noTog the noTog to set
+     */
+    public void setNoTog(boolean noTog) {
+        this.noTog = noTog;
+    }
+
+    /**
+     * @return the rc5
+     */
+    public boolean isRc5() {
+        return rc5;
+    }
+
+    /**
+     * @param rc5 the rc5 to set
+     */
+    public void setRc5(boolean rc5) {
+        this.rc5 = rc5;
+    }
+
+    /**
+     * @return the rc6
+     */
+    public boolean isRc6() {
+        return rc6;
+    }
+
+    /**
+     * @param rc6 the rc6 to set
+     */
+    public void setRc6(boolean rc6) {
+        this.rc6 = rc6;
+    }
 
     /**
      * Matches two IrCommands Commands match if they have the same remote and
@@ -65,7 +262,7 @@ public class IRcommand {
      *            the another command
      * @return true, if successful
      */
-    public boolean matches(IRcommand anotherCommand) {
+    public boolean matches(IrCommand anotherCommand) {
         return (matchRemote(anotherCommand) && matchCommand(anotherCommand));
     }
 
@@ -77,12 +274,8 @@ public class IRcommand {
      *            the s
      * @return true, if successful
      */
-    private boolean matchRemote(IRcommand S) {
-        if ("*".equals(remote) || "*".equals(S.remote)) {
-            return true;
-        } else {
-            return S.remote.equals(remote);
-        }
+    private boolean matchRemote(IrCommand S) {
+        return "*".equals(remote) || "*".equals(S.remote) || S.remote.equals(remote);
     }
 
     /**
@@ -92,12 +285,8 @@ public class IRcommand {
      *            the s
      * @return true, if successful
      */
-    private boolean matchCommand(IRcommand S) {
-        if ("*".equals(command) || "*".equals(S.command)) {
-            return true;
-        } else {
-            return S.command.equals(command);
-        }
+    private boolean matchCommand(IrCommand S) {
+        return "*".equals(command) || "*".equals(S.command) || S.command.equals(command);
     }
 
     /**
@@ -127,12 +316,8 @@ public class IRcommand {
 
         // Number of pulse pairs - 1 byte
 
-        try {
-            byte[] byteSequence = sequence.getBytes("ASCII");
-            byteBuffer.put((byte) (byteSequence.length));
-        } catch (UnsupportedEncodingException e) {
-            logger.debug("An exception occurred while encoding a bytebuffer");
-        }
+        byte[] byteSequence = sequence.getBytes(StandardCharsets.US_ASCII);
+        byteBuffer.put((byte) (byteSequence.length));
 
         // Frequency - 1 byte
         byteBuffer.put((byte) frequency);
