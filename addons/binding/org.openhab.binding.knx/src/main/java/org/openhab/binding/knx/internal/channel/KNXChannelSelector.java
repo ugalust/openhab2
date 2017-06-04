@@ -37,7 +37,7 @@ public final class KNXChannelSelector {
         }
     };
 
-    public static KNXChannelType getValueSelectorFromChannelTypeId(String channelTypeID)
+    public static KNXChannelType getTypeFromChannelTypeId(String channelTypeID)
             throws IllegalArgumentException {
 
         for (KNXChannelType c : types) {

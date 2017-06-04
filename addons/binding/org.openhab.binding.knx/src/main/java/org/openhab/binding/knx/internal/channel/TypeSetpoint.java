@@ -10,32 +10,19 @@ package org.openhab.binding.knx.internal.channel;
 
 import static org.openhab.binding.knx.KNXBindingConstants.*;
 
-import java.util.Set;
-
 import org.eclipse.smarthome.config.core.Configuration;
-import org.eclipse.smarthome.core.types.Type;
 
-import tuwien.auto.calimero.GroupAddress;
+import com.google.common.collect.Sets;
 
 class TypeSetpoint extends KNXChannelType {
 
     TypeSetpoint() {
-        super(CHANNEL_SETPOINT);
+        super(CHANNEL_SETPOINT, Sets.newHashSet(STATUS_GA, SETPOINT_GA));
     }
 
     @Override
-    public String getDPT(GroupAddress groupAddress, Configuration configuration) {
-        return "9.001";
+    public String getDPT(Configuration configuration, String addressKey) {
+        return (getAddressKeys().contains(addressKey) && super.getDPT(configuration, addressKey) == null) ? "9.001"
+                : super.getDPT(configuration, addressKey);
     }
-
-    @Override
-    protected Set<String> getReadAddressKeys() {
-        return asSet(STATUS_GA);
-    }
-
-    @Override
-    protected Set<String> getWriteAddressKeys(Type type) {
-        return asSet(SETPOINT_GA);
-    }
-
 }

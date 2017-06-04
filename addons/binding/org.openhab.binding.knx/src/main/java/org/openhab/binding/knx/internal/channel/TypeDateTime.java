@@ -10,32 +10,11 @@ package org.openhab.binding.knx.internal.channel;
 
 import static org.openhab.binding.knx.KNXBindingConstants.*;
 
-import java.util.Set;
-
-import org.eclipse.smarthome.config.core.Configuration;
-import org.eclipse.smarthome.core.types.Type;
-
-import tuwien.auto.calimero.GroupAddress;
+import com.google.common.collect.Sets;
 
 class TypeDateTime extends KNXChannelType {
 
     TypeDateTime() {
-        super(CHANNEL_DATETIME);
+        super(CHANNEL_DATETIME, Sets.newHashSet(GROUPADDRESS));
     }
-
-    @Override
-    public String getDPT(GroupAddress groupAddress, Configuration configuration) {
-        return (String) configuration.get(DPT);
-    }
-
-    @Override
-    protected Set<String> getReadAddressKeys() {
-        return asSet(GROUPADDRESS);
-    }
-
-    @Override
-    protected Set<String> getWriteAddressKeys(Type type) {
-        return asSet(GROUPADDRESS);
-    }
-
 }

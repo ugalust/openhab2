@@ -10,69 +10,43 @@ package org.openhab.binding.knx.internal.channel;
 
 import static org.openhab.binding.knx.KNXBindingConstants.*;
 
-import java.util.Set;
-
 import org.eclipse.smarthome.config.core.Configuration;
 import org.eclipse.smarthome.core.library.types.PercentType;
-import org.eclipse.smarthome.core.library.types.StopMoveType;
 import org.eclipse.smarthome.core.library.types.UpDownType;
 import org.eclipse.smarthome.core.types.Type;
 
 import com.google.common.collect.Sets;
 
-import tuwien.auto.calimero.GroupAddress;
-import tuwien.auto.calimero.exception.KNXFormatException;
-
 class TypeRollershutter extends KNXChannelType {
 
     TypeRollershutter() {
-        super(CHANNEL_ROLLERSHUTTER);
+        super(CHANNEL_ROLLERSHUTTER, Sets.newHashSet(UP_DOWN_GA, UP_DOWN_STATUS_GA, STOP_MOVE_GA, STOP_MOVE_STATUS_GA,
+                POSITION_GA, POSITION_STATUS_GA));
     }
 
     @Override
-    public String getDPT(GroupAddress groupAddress, Configuration configuration) throws KNXFormatException {
-        if (isEquals(configuration, UP_DOWN_GA, groupAddress)) {
-            return "1.008";
-        }
-        if (isEquals(configuration, UP_DOWN_STATUS_GA, groupAddress)) {
-            return "1.008";
-        }
-        if (isEquals(configuration, STOP_MOVE_GA, groupAddress)) {
-            return "1.010";
-        }
-        if (isEquals(configuration, STOP_MOVE_STATUS_GA, groupAddress)) {
-            return "1.010";
-        }
-        if (isEquals(configuration, POSITION_GA, groupAddress)) {
-            return "5.001";
-        }
-        if (isEquals(configuration, POSITION_STATUS_GA, groupAddress)) {
-            return "5.001";
-        }
-        return null;
-    }
+    public String getDPT(Configuration configuration, String addressKey) {
 
-    @Override
-    protected Set<String> getReadAddressKeys() {
-        return asSet(UP_DOWN_STATUS_GA, STOP_MOVE_STATUS_GA, POSITION_STATUS_GA);
-    }
-
-    @Override
-    protected Set<String> getWriteAddressKeys(Type type) {
-        if (type == null) {
-            return asSet(UP_DOWN_GA, STOP_MOVE_GA, POSITION_GA);
+        if (super.getDPT(configuration, addressKey) == null) {
+            switch ((addressKey != null) ? addressKey : DEFAULT_ADDRESS_KEY) {
+                case UP_DOWN_GA:
+                    return "1.008";
+                case UP_DOWN_STATUS_GA:
+                    return "1.008";
+                case STOP_MOVE_GA:
+                    return "1.010";
+                case STOP_MOVE_STATUS_GA:
+                    return "1.010";
+                case POSITION_GA:
+                    return "5.001";
+                case POSITION_STATUS_GA:
+                    return "5.001";
+                default:
+                    return null;
+            }
         } else {
-            if (type instanceof UpDownType) {
-                return asSet(UP_DOWN_GA);
-            }
-            if (type instanceof PercentType) {
-                return asSet(POSITION_GA);
-            }
-            if (type instanceof StopMoveType) {
-                return asSet(STOP_MOVE_GA);
-            }
+            return super.getDPT(configuration, addressKey);
         }
-        return Sets.newHashSet();
     }
 
     @Override

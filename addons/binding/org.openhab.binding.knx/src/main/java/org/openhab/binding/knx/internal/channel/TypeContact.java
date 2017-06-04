@@ -13,29 +13,25 @@ import static org.openhab.binding.knx.KNXBindingConstants.*;
 import java.util.Set;
 
 import org.eclipse.smarthome.config.core.Configuration;
-import org.eclipse.smarthome.core.types.Type;
+import org.openhab.binding.knx.internal.handler.Flag;
 
-import tuwien.auto.calimero.GroupAddress;
+import com.google.common.collect.Sets;
 
 class TypeContact extends KNXChannelType {
 
     TypeContact() {
-        super(CHANNEL_CONTACT);
+        super(CHANNEL_CONTACT, Sets.newHashSet(GROUPADDRESS));
     }
 
     @Override
-    public String getDPT(GroupAddress groupAddress, Configuration configuration) {
-        return (String) configuration.get(DPT);
+    public String getDPT(Configuration configuration, String addressKey) {
+        return (getAddressKeys().contains(addressKey) && super.getDPT(configuration, addressKey) == null) ? "1.001"
+                : super.getDPT(configuration, addressKey);
     }
 
     @Override
-    public Set<String> getReadAddressKeys() {
-        return asSet(GROUPADDRESS);
+    public Set<Flag> getFlags(Configuration configuration, String addressKey) {
+        return super.getFlags(configuration, addressKey).size() == 0 ? asSet(Flag.WRITE)
+                : super.getFlags(configuration, addressKey);
     }
-
-    @Override
-    protected Set<String> getWriteAddressKeys(Type type) {
-        return asSet(GROUPADDRESS);
-    }
-
 }

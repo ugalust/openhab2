@@ -11,7 +11,6 @@ package org.openhab.binding.knx.handler;
 import static org.openhab.binding.knx.KNXBindingConstants.*;
 import static org.openhab.binding.knx.internal.handler.DeviceConstants.*;
 
-import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -40,6 +39,7 @@ import org.openhab.binding.knx.internal.channel.KNXChannelSelector;
 import org.openhab.binding.knx.internal.channel.KNXChannelType;
 import org.openhab.binding.knx.internal.handler.BasicConfig;
 import org.openhab.binding.knx.internal.handler.Firmware;
+import org.openhab.binding.knx.internal.handler.Flag;
 import org.openhab.binding.knx.internal.handler.Manufacturer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,6 +85,7 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
     private static final long OPERATION_TIMEOUT = 5000;
     private static final long OPERATION_INTERVAL = 2000;
     private boolean filledDescription = false;
+    private Set<ChannelUID> blockedChannels = new HashSet<ChannelUID>();
 
     public KNXBasicThingHandler(Thing thing) {
         super(thing);
@@ -127,16 +128,13 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
 
     private void initializeGroupAddresses() {
         forAllChannels((selector, channelConfiguration) -> {
-            groupAddresses.addAll(selector.getReadAddresses(channelConfiguration));
-            groupAddresses.addAll(selector.getWriteAddresses(channelConfiguration, null));
-            groupAddresses.addAll(selector.getTransmitAddresses(channelConfiguration, null));
-            groupAddresses.addAll(selector.getUpdateAddresses(channelConfiguration, null));
+            groupAddresses.addAll(selector.getAddresses(channelConfiguration));
         });
     }
 
     private KNXChannelType getKNXChannelType(Channel channel) {
         String channelID = channel.getChannelTypeUID().getId();
-        KNXChannelType selector = KNXChannelSelector.getValueSelectorFromChannelTypeId(channelID);
+        KNXChannelType selector = KNXChannelSelector.getTypeFromChannelTypeId(channelID);
         return selector;
     }
 
@@ -222,11 +220,13 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
     @Override
     public void channelLinked(ChannelUID channelUID) {
         withKNXType(channelUID, (selector, configuration) -> {
-            Boolean mustRead = (Boolean) configuration.get(READ);
-            BigDecimal readInterval = (BigDecimal) configuration.get(INTERVAL);
-            for (GroupAddress address : selector.getReadAddresses(configuration)) {
-                if (mustRead || readInterval.intValue() > 0) {
-                    scheduleReadJob(address, selector.getDPT(address, configuration), true, BigDecimal.ZERO);
+            for (String addressKey : selector.getAddressKeys(configuration)) {
+                if (selector.getGroupAddress(configuration, addressKey) != null) {
+                    if (selector.getFlags(configuration, addressKey).contains(Flag.READ)
+                            || selector.getReadInterval(configuration, addressKey) > 0) {
+                        scheduleReadJob(selector.getGroupAddress(configuration, addressKey),
+                                selector.getDPT(configuration, addressKey), true, 0);
+                    }
                 }
             }
         });
@@ -237,35 +237,37 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
 
         for (Channel channel : getThing().getChannels()) {
             if (isLinked(channel.getUID().getId())) {
-                withKNXType(channel, (selector, channelConfiguration) -> {
-                    Boolean mustRead = (Boolean) channelConfiguration.get(READ);
-                    BigDecimal readInterval = (BigDecimal) channelConfiguration.get(INTERVAL);
-                    for (GroupAddress address : selector.getReadAddresses(channelConfiguration)) {
-                        scheduleReadJob(address, selector.getDPT(address, channelConfiguration), mustRead,
-                                readInterval);
+                withKNXType(channel, (selector, configuration) -> {
+                    for (String addressKey : selector.getAddressKeys(configuration)) {
+                        if (selector.getGroupAddress(configuration, addressKey) != null) {
+                            scheduleReadJob(selector.getGroupAddress(configuration, addressKey),
+                                    selector.getDPT(configuration, addressKey),
+                                    selector.getFlags(configuration, addressKey).contains(Flag.READ),
+                                    selector.getReadInterval(configuration, addressKey));
+                        }
                     }
                 });
             }
         }
     }
 
-    private void scheduleReadJob(GroupAddress groupAddress, String dpt, boolean immediate, BigDecimal readInterval) {
-        if (knxScheduler == null) {
+    private void scheduleReadJob(GroupAddress groupAddress, String dpt, boolean immediate, int readInterval) {
+        if (knxScheduler == null || dpt == null) {
             return;
         }
 
-        boolean recurring = readInterval != null && readInterval.intValue() > 0;
+        boolean recurring = readInterval > 0 ? true : false;
 
         if (immediate) {
             knxScheduler.schedule(new ReadRunnable(groupAddress, dpt), 0, TimeUnit.SECONDS);
         }
 
-        if (recurring && readInterval != null) {
+        if (recurring) {
             ScheduledFuture<?> future = readFutures.get(groupAddress);
             if (future == null || future.isDone() || future.isCancelled()) {
-                int initialDelay = immediate ? 0 : readInterval.intValue();
+                int initialDelay = immediate ? 0 : readInterval;
                 future = knxScheduler.scheduleWithFixedDelay(new ReadRunnable(groupAddress, dpt), initialDelay,
-                        readInterval.intValue(), TimeUnit.SECONDS);
+                        readInterval, TimeUnit.SECONDS);
                 readFutures.put(groupAddress, future);
             }
         }
@@ -301,20 +303,18 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
     }
 
     @Override
-    public void handleUpdate(ChannelUID channelUID, State newState) {
-        if (getBridgeHandler() == null) {
-            logger.warn("KNX bridge handler not found. Cannot handle updates without bridge.");
-        }
-        logger.trace("Handling a State ({}) update for Channel {}", newState, channelUID);
-        switch (channelUID.getId()) {
-            case CHANNEL_RESET:
-                if (address != null) {
-                    restart();
+    public void handleUpdate(ChannelUID channelUID, State state) {
+        if (blockedChannels.remove(channelUID)) {
+            logger.trace("Skipping the Update '{}' for channel {}", state, channelUID);
+        } else {
+            logger.trace("Handling an Update '{}' for channel {}", state, channelUID);
+
+            withKNXType(channelUID, (selector, channelConfiguration) -> {
+                if (selector.isAutoUpdate(channelConfiguration)) {
+                    blockedChannels.add(channelUID);
                 }
-                break;
-            default:
-                sendToKNX(channelUID, newState, true);
-                break;
+            });
+            sendToKNX(channelUID, state);
         }
     }
 
@@ -323,12 +323,13 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
         if (getBridgeHandler() == null) {
             logger.warn("KNX bridge handler not found. Cannot handle commands without bridge.");
         }
-        logger.trace("Handling a Command ({})  for Channel {}", command, channelUID);
+        logger.trace("Handling a Command '{}' for channel {}", command, channelUID);
         if (command instanceof RefreshType) {
             logger.debug("Refreshing channel {}", channelUID);
             withKNXType(channelUID, (selector, channelConfiguration) -> {
-                for (GroupAddress address : selector.getReadAddresses(channelConfiguration)) {
-                    scheduleReadJob(address, selector.getDPT(address, channelConfiguration), true, BigDecimal.ZERO);
+                for (String addressKey : selector.getAddressKeys(channelConfiguration)) {
+                    scheduleReadJob(selector.getGroupAddress(channelConfiguration, addressKey),
+                            selector.getDPT(channelConfiguration, addressKey), true, 0);
                 }
             });
         } else {
@@ -339,31 +340,46 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
                     }
                     break;
                 default:
-                    sendToKNX(channelUID, command, false);
+                    withKNXType(channelUID, (selector, channelConfiguration) -> {
+                        if (selector.isAutoUpdate(channelConfiguration)) {
+                            logger.trace("Adding channel {} to list for which an Update has to be skipped", channelUID);
+                            blockedChannels.add(channelUID);
+                        }
+                    });
+                    sendToKNX(channelUID, command);
                     break;
             }
         }
-
     }
 
-    private void sendToKNX(ChannelUID channelUID, Type type, boolean toSlaves) {
+    private void sendToKNX(ChannelUID channelUID, Type type) {
         withKNXType(channelUID, (selector, channelConfiguration) -> {
-            if (selector.isSlave() != toSlaves) {
-                return;
-            }
             Type convertedType = selector.convertType(channelConfiguration, type);
             if (logger.isTraceEnabled()) {
-                logger.trace("Sending to channel {} {} {} {}/{} : {} -> {}", channelUID.getId(),
-                        getThing().getChannel(channelUID.getId()).getConfiguration().get(DPT),
-                        getThing().getChannel(channelUID.getId()).getAcceptedItemType(),
-                        getThing().getChannel(channelUID.getId()).getConfiguration().get(READ),
-                        getThing().getChannel(channelUID.getId()).getConfiguration().get(WRITE), type, convertedType);
+                logger.trace("Sending to channel {} {} : {} -> {}", channelUID.getId(),
+                        getThing().getChannel(channelUID.getId()).getAcceptedItemType(), type, convertedType);
             }
             if (convertedType != null) {
-                for (GroupAddress address : selector.getWriteAddresses(channelConfiguration, convertedType)) {
-                    getBridgeHandler().writeToKNX(address, selector.getDPT(address, channelConfiguration),
-                            convertedType);
+                for (String addressKey : selector.getAddressKeys(channelConfiguration)) {
+                    if (selector.getFlags(channelConfiguration, addressKey).contains(Flag.WRITE) && getBridgeHandler()
+                            .toDPTValue(convertedType, selector.getDPT(channelConfiguration, addressKey)) != null) {
+                        getBridgeHandler().writeToKNX(selector.getGroupAddress(channelConfiguration, addressKey),
+                                selector.getDPT(channelConfiguration, addressKey), convertedType);
+
+                        // The assumption is that channels are correctly configured, and thus, after the conversion of
+                        // the type parameter, only one telegram has/can be sent on the knx bus. In the event that
+                        // multiple addressKeys contain Flag.WRITE, then the conversion should be as such that only one
+                        // of matches the converted value Type, and thus emit the Telegram on the bus
+
+                        return;
+                    }
                 }
+
+                // TODO : investigate to what extend Calimero allows to send ReadResponses to actors with a
+                // Flag.UPDATE in the configuration for the given GroupAddress. We are currently using a
+                // ProcessCommunicator which AFAIK only provides a write() method that does not make the distinction
+                // between a WriteRequest and ReadResponse that is put on the bus
+
             }
         });
     }
@@ -371,6 +387,10 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
     @Override
     public void onGroupRead(KNXBridgeBaseThingHandler bridge, IndividualAddress source, GroupAddress destination,
             byte[] asdu) {
+
+        logger.trace("Thing {} received a Group Read Request telegram from '{}' for destination '{}'",
+                getThing().getUID(), source, destination);
+
         // Nothing to do here - Software representations of physical actors should not respond to GroupRead requests, as
         // the physical device will be responding to these instead
     }
@@ -378,34 +398,50 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
     @Override
     public void onGroupReadResponse(KNXBridgeBaseThingHandler bridge, IndividualAddress source,
             GroupAddress destination, byte[] asdu) {
-        // Group Read Responses are treated the same as Group Write telegrams
-        onGroupWrite(bridge, source, destination, asdu);
+
+        logger.trace("Thing {} received a Group Read Response telegram from '{}' for destination '{}'",
+                getThing().getUID(), source, destination);
+
+        for (Channel channel : getThing().getChannels()) {
+            withKNXType(channel, (selector, channelConfiguration) -> {
+                for (String addressKey : selector.getAddressKeys(channelConfiguration)) {
+                    if (selector.getFlags(channelConfiguration, addressKey).contains(Flag.UPDATE)
+                            || selector.getFlags(channelConfiguration, addressKey).contains(Flag.READ)) {
+                        logger.trace(
+                                "Thing {} processes a Group Read Response telegram for destination '{}' for channel '{}'",
+                                getThing().getUID(), destination, channel.getUID());
+                        processDataReceived(bridge, destination, asdu,
+                                selector.getDPT(channelConfiguration, addressKey), channel.getUID());
+                    }
+                }
+            });
+        }
     }
 
     @Override
     public void onGroupWrite(KNXBridgeBaseThingHandler bridge, IndividualAddress source, GroupAddress destination,
             byte[] asdu) {
 
-        logger.trace("Thing {} received a Group Write telegram from '{}' for destination '{}'", getThing().getUID(),
-                source, destination);
+        logger.trace("Thing {} received a Group Write Request telegram from '{}' for destination '{}'",
+                getThing().getUID(), source, destination);
 
         for (Channel channel : getThing().getChannels()) {
             withKNXType(channel, (selector, channelConfiguration) -> {
-                Set<GroupAddress> addresses = selector.getReadAddresses(channelConfiguration);
-                addresses.addAll(selector.getTransmitAddresses(channelConfiguration, null));
-
-                if (addresses.contains(destination)) {
-                    logger.trace("Thing {} processes a Group Write telegram for destination '{}' for channel '{}'",
-                            getThing().getUID(), destination, channel.getUID());
-                    processDataReceived(bridge, destination, asdu, selector.getDPT(destination, channelConfiguration),
-                            channel.getUID(), selector.isSlave());
+                for (String addressKey : selector.getAddressKeys(channelConfiguration)) {
+                    if (selector.getFlags(channelConfiguration, addressKey).contains(Flag.TRANSMIT)) {
+                        logger.trace(
+                                "Thing {} processes a Group Write Request telegram for destination '{}' for channel '{}'",
+                                getThing().getUID(), destination, channel.getUID());
+                        processDataReceived(bridge, destination, asdu,
+                                selector.getDPT(channelConfiguration, addressKey), channel.getUID());
+                    }
                 }
             });
         }
     }
 
     private void processDataReceived(KNXBridgeBaseThingHandler bridge, GroupAddress destination, byte[] asdu,
-            String dpt, ChannelUID channelUID, boolean slave) {
+            String dpt, ChannelUID channelUID) {
 
         if (dpt != null) {
 
@@ -414,36 +450,37 @@ public class KNXBasicThingHandler extends BaseThingHandler implements Individual
                 return;
             }
 
-            Datapoint datapoint = new CommandDP(destination, getThing().getUID().toString(), 0, dpt);
             Type type = bridge.getType(destination, dpt, asdu);
 
             if (type != null) {
-                if (slave) {
-                    if (type instanceof Command) {
+                withKNXType(channelUID, (selector, channelConfiguration) -> {
+                    if (selector.isAutoUpdate(channelConfiguration)) {
+                        logger.trace("Adding channel {} to list for which an Update has to be skipped", channelUID);
+                        blockedChannels.add(channelUID);
+                        updateState(channelUID, (State) type);
+                    } else {
                         postCommand(channelUID, (Command) type);
                     }
-                } else {
-                    if (type instanceof State) {
-                        updateState(channelUID, (State) type);
-                    }
-                }
+                });
+            }
+        } else {
+            final char[] hexCode = "0123456789ABCDEF".toCharArray();
+            StringBuilder sb = new StringBuilder(2 + asdu.length * 2);
+            sb.append("0x");
+            for (byte b : asdu) {
+                sb.append(hexCode[(b >> 4) & 0xF]);
+                sb.append(hexCode[(b & 0xF)]);
+            }
 
-            } else {
-                final char[] hexCode = "0123456789ABCDEF".toCharArray();
-                StringBuilder sb = new StringBuilder(2 + asdu.length * 2);
-                sb.append("0x");
-                for (byte b : asdu) {
-                    sb.append(hexCode[(b >> 4) & 0xF]);
-                    sb.append(hexCode[(b & 0xF)]);
-                }
-
+            if (logger.isWarnEnabled()) {
+                Datapoint datapoint = new CommandDP(destination, getThing().getUID().toString(), 0, dpt);
                 logger.warn(
                         "Ignoring KNX bus data: couldn't transform to an openHAB type (not supported). Destination='{}', datapoint='{}', data='{}'",
                         destination, datapoint, sb);
-                return;
             }
-
+            return;
         }
+
     }
 
     public void restart() {

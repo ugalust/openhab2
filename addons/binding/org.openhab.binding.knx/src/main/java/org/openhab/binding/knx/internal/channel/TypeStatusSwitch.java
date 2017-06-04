@@ -13,29 +13,40 @@ import static org.openhab.binding.knx.KNXBindingConstants.*;
 import java.util.Set;
 
 import org.eclipse.smarthome.config.core.Configuration;
-import org.eclipse.smarthome.core.types.Type;
+import org.openhab.binding.knx.internal.handler.Flag;
 
-import tuwien.auto.calimero.GroupAddress;
+import com.google.common.collect.Sets;
 
 class TypeStatusSwitch extends KNXChannelType {
 
     TypeStatusSwitch() {
-        super(CHANNEL_STATUSSWITCH);
+        super(CHANNEL_STATUSSWITCH, Sets.newHashSet(STATUS_GA, SWITCH_GA));
     }
 
     @Override
-    public String getDPT(GroupAddress groupAddress, Configuration configuration) {
-        return "1.001";
+    public String getDPT(Configuration configuration, String addressKey) {
+        return (getAddressKeys().contains(addressKey) && super.getDPT(configuration, addressKey) == null) ? "1.001"
+                : super.getDPT(configuration, addressKey);
     }
 
     @Override
-    protected Set<String> getReadAddressKeys() {
-        return asSet(STATUS_GA);
+    public Set<Flag> getFlags(Configuration configuration, String addressKey) {
+        if (super.getFlags(configuration, addressKey).size() == 0) {
+            switch (addressKey) {
+                case STATUS_GA: {
+                    return asSet(Flag.READ, Flag.TRANSMIT);
+                }
+                case SWITCH_GA: {
+                    return asSet(Flag.WRITE);
+                }
+            }
+        }
+
+        return super.getFlags(configuration, addressKey);
     }
 
     @Override
-    protected Set<String> getWriteAddressKeys(Type type) {
-        return asSet(SWITCH_GA);
+    public boolean isAutoUpdate(Configuration channelConfiguration) {
+        return channelConfiguration.containsKey(STATUS_GA);
     }
-
 }

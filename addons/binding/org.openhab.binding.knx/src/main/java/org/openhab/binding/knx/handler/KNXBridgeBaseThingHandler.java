@@ -486,7 +486,8 @@ public abstract class KNXBridgeBaseThingHandler extends BaseBridgeHandler implem
         for (int i = 0; i < MAX_SEND_ATTEMPTS; i++) {
             try {
                 processCommunicator.write(datapoint, mappedValue);
-                logger.debug("Wrote value '{}' to datapoint '{}' ({}. attempt).", value, datapoint, i);
+                logger.debug("Wrote value '{}' (mapped from '{}') to datapoint '{}' ({}. attempt).", mappedValue, value,
+                        datapoint, i);
                 break;
             } catch (KNXException e) {
                 if (i < MAX_SEND_ATTEMPTS - 1) {
@@ -512,7 +513,7 @@ public abstract class KNXBridgeBaseThingHandler extends BaseBridgeHandler implem
      *
      * @return the corresponding KNX datapoint type value as a string
      */
-    private String toDPTValue(Type type, String dpt) {
+    public String toDPTValue(Type type, String dpt) {
         for (KNXTypeMapper typeMapper : typeMappers) {
             String value = typeMapper.toDPTValue(type, dpt);
             if (value != null) {

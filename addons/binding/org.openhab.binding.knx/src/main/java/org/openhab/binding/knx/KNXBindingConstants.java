@@ -58,6 +58,7 @@ public class KNXBindingConstants {
     public static final String CURRENT_GA = "currentGA";
     public static final String DPT = "dpt";
     public static final String DESCRIPTION = "description";
+    public static final String DEFAULT_ADDRESS_KEY = "default_address_key";
     public static final String ENERGY_GA = "energyGA";
     public static final String FETCH = "fetch";
     public static final String GROUPADDRESS = "groupaddress";

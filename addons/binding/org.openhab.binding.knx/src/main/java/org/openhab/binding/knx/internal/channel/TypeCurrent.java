@@ -10,26 +10,19 @@ package org.openhab.binding.knx.internal.channel;
 
 import static org.openhab.binding.knx.KNXBindingConstants.*;
 
-import java.util.Set;
-
 import org.eclipse.smarthome.config.core.Configuration;
 
-import tuwien.auto.calimero.GroupAddress;
+import com.google.common.collect.Sets;
 
 class TypeCurrent extends KNXChannelType {
 
     TypeCurrent() {
-        super(CHANNEL_CURRENT);
+        super(CHANNEL_CURRENT, Sets.newHashSet(CURRENT_GA));
     }
 
     @Override
-    public String getDPT(GroupAddress groupAddress, Configuration configuration) {
-        return "7.012";
+    public String getDPT(Configuration configuration, String addressKey) {
+        return (getAddressKeys().contains(addressKey) && super.getDPT(configuration, addressKey) == null) ? "7.012"
+                : super.getDPT(configuration, addressKey);
     }
-
-    @Override
-    protected Set<String> getReadAddressKeys() {
-        return asSet(CURRENT_GA);
-    }
-
 }

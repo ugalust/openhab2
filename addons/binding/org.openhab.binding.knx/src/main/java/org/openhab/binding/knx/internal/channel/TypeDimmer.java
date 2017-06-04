@@ -10,65 +10,41 @@ package org.openhab.binding.knx.internal.channel;
 
 import static org.openhab.binding.knx.KNXBindingConstants.*;
 
-import java.util.Collections;
-import java.util.Set;
-
 import org.eclipse.smarthome.config.core.Configuration;
-import org.eclipse.smarthome.core.library.types.IncreaseDecreaseType;
 import org.eclipse.smarthome.core.library.types.OnOffType;
 import org.eclipse.smarthome.core.library.types.PercentType;
 import org.eclipse.smarthome.core.types.Type;
 
-import tuwien.auto.calimero.GroupAddress;
-import tuwien.auto.calimero.exception.KNXFormatException;
+import com.google.common.collect.Sets;
 
 class TypeDimmer extends KNXChannelType {
 
     TypeDimmer() {
-        super(CHANNEL_DIMMER);
+        super(CHANNEL_DIMMER,
+                Sets.newHashSet(SWITCH_GA, STATUS_GA, INCREASE_DECREASE_GA, POSITION_GA, POSITION_STATUS_GA));
     }
 
     @Override
-    public String getDPT(GroupAddress groupAddress, Configuration configuration) throws KNXFormatException {
-        if (isEquals(configuration, SWITCH_GA, groupAddress)) {
-            return "1.001";
-        }
-        if (isEquals(configuration, STATUS_GA, groupAddress)) {
-            return "1.001";
-        }
-        if (isEquals(configuration, POSITION_GA, groupAddress)) {
-            return "5.001";
-        }
-        if (isEquals(configuration, POSITION_STATUS_GA, groupAddress)) {
-            return "5.001";
-        }
-        if (isEquals(configuration, INCREASE_DECREASE_GA, groupAddress)) {
-            return "3.007";
-        }
-        return null;
-    }
+    public String getDPT(Configuration configuration, String addressKey) {
 
-    @Override
-    protected Set<String> getReadAddressKeys() {
-        return asSet(STATUS_GA, POSITION_GA);
-    }
-
-    @Override
-    protected Set<String> getWriteAddressKeys(Type type) {
-        if (type == null) {
-            return asSet(SWITCH_GA, INCREASE_DECREASE_GA, POSITION_GA);
+        if (super.getDPT(configuration, addressKey) == null) {
+            switch ((addressKey != null) ? addressKey : DEFAULT_ADDRESS_KEY) {
+                case SWITCH_GA:
+                    return "1.001";
+                case STATUS_GA:
+                    return "1.001";
+                case INCREASE_DECREASE_GA:
+                    return "3.007";
+                case POSITION_GA:
+                    return "5.001";
+                case POSITION_STATUS_GA:
+                    return "5.001";
+                default:
+                    return null;
+            }
         } else {
-            if (type instanceof OnOffType) {
-                return asSet(SWITCH_GA);
-            }
-            if (type instanceof PercentType) {
-                return asSet(POSITION_GA);
-            }
-            if (type instanceof IncreaseDecreaseType) {
-                return asSet(INCREASE_DECREASE_GA);
-            }
+            return super.getDPT(configuration, addressKey);
         }
-        return Collections.emptySet();
     }
 
     @Override
