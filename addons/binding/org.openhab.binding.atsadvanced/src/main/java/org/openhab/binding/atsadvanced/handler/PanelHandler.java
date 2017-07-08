@@ -223,9 +223,9 @@ public class PanelHandler extends BaseBridgeHandler {
                         updateChangedZonesStatus();
                         updateChangedAreasStatus();
                     }
-                    if (sseclient != null) {
-                        sseclient.Heartbeat();
-                    }
+                    // if (sseclient != null) {
+                    // sseclient.Heartbeat();
+                    // }
                 }
             } catch (Exception e) {
                 e.printStackTrace();
@@ -433,6 +433,8 @@ public class PanelHandler extends BaseBridgeHandler {
             }
             sseclient = new ServerEventsClient(gatewayURL).registerHandler("panelevent", (sseclient, e) -> {
                 handleMessageResponse((MessageResponse) JsonUtils.fromJson(e.getJson(), MessageResponse.class));
+            }).setOnConnect(sub -> {
+                logger.debug("The SSE Hartbeat is set at {}ms", sub.getHeartbeatIntervalMs());
             }).start();
             clientsSetUp = true;
         } catch (Exception e) {
