@@ -53,7 +53,6 @@ import org.eclipse.smarthome.core.thing.type.ChannelTypeUID;
 import org.eclipse.smarthome.core.thing.util.ThingHelper;
 import org.eclipse.smarthome.core.types.Type;
 import org.openhab.binding.knx.KNXProjectProvider;
-import org.openhab.binding.knx.handler.KNXBridgeBaseThingHandler;
 import org.openhab.binding.knx.internal.dpt.KNXCoreTypeMapper;
 import org.openhab.binding.knx.internal.factory.KNXHandlerFactory;
 import org.openhab.binding.knx.internal.handler.BridgeConfiguration;
@@ -67,7 +66,7 @@ import org.w3c.dom.Element;
 
 public class KNXProjectThingProvider implements ThingProvider, KNXProjectProvider {
 
-    private final Logger logger = LoggerFactory.getLogger(KNXBridgeBaseThingHandler.class);
+    private final Logger logger = LoggerFactory.getLogger(KNXProjectThingProvider.class);
     private final ScheduledExecutorService scheduler = ThreadPoolManager.getScheduledPool("knx");
 
     private KNXHandlerFactory factory;

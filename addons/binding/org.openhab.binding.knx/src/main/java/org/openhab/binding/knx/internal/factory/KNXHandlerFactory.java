@@ -28,7 +28,6 @@ import org.eclipse.smarthome.core.thing.ThingTypeUID;
 import org.eclipse.smarthome.core.thing.ThingUID;
 import org.eclipse.smarthome.core.thing.binding.BaseThingHandlerFactory;
 import org.eclipse.smarthome.core.thing.binding.ThingHandler;
-import org.eclipse.smarthome.core.thing.link.ItemChannelLinkRegistry;
 import org.eclipse.smarthome.core.thing.type.ThingType;
 import org.eclipse.smarthome.core.thing.type.ThingTypeRegistry;
 import org.openhab.binding.knx.KNXProjectProvider;
@@ -62,17 +61,8 @@ public class KNXHandlerFactory extends BaseThingHandlerFactory {
     private final Map<ThingUID, ServiceRegistration> knxProjectProviderServiceRegs = new HashMap<>();
     private final Collection<KNXTypeMapper> typeMappers = new HashSet<KNXTypeMapper>();
     private final Collection<KNXBridgeBaseThingHandler> bridgeHandlers = new HashSet<KNXBridgeBaseThingHandler>();
-    private ItemChannelLinkRegistry itemChannelLinkRegistry;
     private ThingTypeRegistry thingTypeRegistry;
     private LocaleProvider localeProvider;
-
-    protected void setItemChannelLinkRegistry(ItemChannelLinkRegistry registry) {
-        itemChannelLinkRegistry = registry;
-    }
-
-    protected void unsetItemChannelLinkRegistry(ItemChannelLinkRegistry registry) {
-        itemChannelLinkRegistry = null;
-    }
 
     protected void setThingTypeRegistry(ThingTypeRegistry thingTypeRegistry) {
         this.thingTypeRegistry = thingTypeRegistry;
@@ -134,7 +124,7 @@ public class KNXHandlerFactory extends BaseThingHandlerFactory {
         } else if (thing.getThingTypeUID().equals(THING_TYPE_SERIAL_BRIDGE)) {
             return new SerialBridgeThingHandler((Bridge) thing);
         } else if (thing.getThingTypeUID().equals(THING_TYPE_GENERIC)) {
-            return new KNXGenericThingHandler(thing, itemChannelLinkRegistry);
+            return new KNXGenericThingHandler(thing);
         }
         return null;
     }

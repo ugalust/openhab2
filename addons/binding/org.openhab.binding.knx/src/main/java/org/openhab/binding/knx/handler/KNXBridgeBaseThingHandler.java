@@ -150,6 +150,7 @@ public abstract class KNXBridgeBaseThingHandler extends BaseBridgeHandler implem
         void apply(TelegramListener listener, IndividualAddress source, GroupAddress destination, byte[] asdu);
     }
 
+    @SuppressWarnings("null")
     public KNXBridgeBaseThingHandler(Bridge bridge) {
         super(bridge);
     }

@@ -29,7 +29,6 @@ import org.eclipse.smarthome.core.thing.ThingStatus;
 import org.eclipse.smarthome.core.thing.ThingStatusDetail;
 import org.eclipse.smarthome.core.thing.ThingStatusInfo;
 import org.eclipse.smarthome.core.thing.binding.BaseThingHandler;
-import org.eclipse.smarthome.core.thing.link.ItemChannelLinkRegistry;
 import org.eclipse.smarthome.core.types.Command;
 import org.eclipse.smarthome.core.types.RefreshType;
 import org.eclipse.smarthome.core.types.State;
@@ -64,9 +63,6 @@ public class KNXGenericThingHandler extends BaseThingHandler
     private final Logger logger = LoggerFactory.getLogger(KNXGenericThingHandler.class);
 
     protected KNXChannelSelectorProxy knxChannelSelectorProxy = new KNXChannelSelectorProxy();
-
-    protected ItemChannelLinkRegistry itemChannelLinkRegistry;
-    protected ArrayList<ChannelUID> blockedChannels = new ArrayList<ChannelUID>();
 
     // the physical address of the KNX actor represented by this Thing
     protected IndividualAddress address;
@@ -112,11 +108,11 @@ public class KNXGenericThingHandler extends BaseThingHandler
     // Property IDs for device information;
     private static final int HARDWARE_TYPE = 78;
 
-    public KNXGenericThingHandler(Thing thing, ItemChannelLinkRegistry registry) {
+    public KNXGenericThingHandler(Thing thing) {
         super(thing);
-        this.itemChannelLinkRegistry = registry;
     }
 
+    @SuppressWarnings("null")
     @Override
     public void initialize() {
 
@@ -198,6 +194,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
         }
     }
 
+    @SuppressWarnings("null")
     @Override
     public void channelLinked(ChannelUID channelUID) {
 
@@ -227,6 +224,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
         }
     }
 
+    @SuppressWarnings("null")
     private void scheduleReadJobs() {
 
         cancelReadFutures();
@@ -269,6 +267,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
         }
     }
 
+    @SuppressWarnings("null")
     @Override
     public void bridgeStatusChanged(ThingStatusInfo bridgeStatusInfo) {
         super.bridgeStatusChanged(bridgeStatusInfo);
@@ -311,6 +310,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
         updateStatus(ThingStatus.REMOVED);
     }
 
+    @SuppressWarnings({ "null", "unused" })
     @Override
     public void handleUpdate(ChannelUID channelUID, State newState) {
 
@@ -319,35 +319,6 @@ public class KNXGenericThingHandler extends BaseThingHandler
         }
 
         logger.trace("Handling a State ({}) update for Channel {}", newState, channelUID.getId());
-
-        // There are multiple ways to prevent circular loops between the KNX bus and the OH runtume. The first option is
-        // to include https://github.com/eclipse/smarthome/pull/2881 in the ESH runtime, and configure manually the
-        // desired behavior Item by Item. A second option is to use a trace mechanism that tracks what States and
-        // Commands were received in the near past, and then eliminate those that resemble a duplicae event. The last
-        // option is to make the KNXThingHandlers use the ItemChannelLinkRegistry infrastructure to detect what Items
-        // Channels are bound to, and put Channels that are originating from other KNX Things into a blocked list, and
-        // filter these out when handleCommand and handleUpdate are called.
-        //
-        // The first option was vetoed. The second option does not yield deterministic behavior. The code for the second
-        // option is still included for discussion purposes but is commented out. The default "look-back" interval of
-        // 500ms not adequate, and putting a higher value leads to missed events. The third option is the only one
-        // remaining that provided a behavior similar to the KNX 1.x binding, which in fact only passes on States and
-        // Command to Channels that are bound to the Item and that are not originating from the KNX binding, e.g.
-        // "inter"-binding bridging is allowed, but "intra"-binding bridging is filtered out. The third option is
-
-        // "Second option"
-        // if (((KNXBridgeBaseThingHandler) getBridge().getHandler()).hasEvent(channelUID, newState, 50, 500)) {
-        // return;
-        // } else {
-        // ((KNXBridgeBaseThingHandler) getBridge().getHandler()).logEvent(channelUID, newState);
-        // }
-
-        // "Third option"
-        if (blockedChannels.contains(channelUID)) {
-            logger.trace("Removing channel '{}' from the list of blocked channels", channelUID);
-            blockedChannels.remove(channelUID);
-            return;
-        }
 
         switch (channelUID.getId()) {
             case CHANNEL_RESET: {
@@ -406,6 +377,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
         }
     }
 
+    @SuppressWarnings({ "null", "unused" })
     @Override
     public void handleCommand(ChannelUID channelUID, Command command) {
 
@@ -415,17 +387,6 @@ public class KNXGenericThingHandler extends BaseThingHandler
 
         logger.trace("Handling a Command ({})  for Channel {}", command, channelUID.getId());
 
-        // if (((KNXBridgeBaseThingHandler) getBridge().getHandler()).hasEvent(channelUID, command, 50, 500)) {
-        // return;
-        // } else {
-        // ((KNXBridgeBaseThingHandler) getBridge().getHandler()).logEvent(channelUID, command);
-        // }
-
-        if (blockedChannels.contains(channelUID)) {
-            logger.trace("Remvoing channel '{}' from the list of blocked channels", channelUID);
-            blockedChannels.remove(channelUID);
-            return;
-        }
         if (command instanceof RefreshType) {
 
             logger.debug("Refreshing channel {}", channelUID);
@@ -495,7 +456,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
                                     if (convertedType != null) {
                                         for (GroupAddress address : knxChannelSelectorProxy.getWriteAddresses(selector,
                                                 channelConfiguration, convertedType)) {
-                                            blockedChannels.add(channelUID);
+                                            // blockedChannels.add(channelUID);
                                             ((KNXBridgeBaseThingHandler) getBridge().getHandler())
                                                     .writeToKNX(address,
                                                             knxChannelSelectorProxy.getDPT(address, selector,
@@ -537,6 +498,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
         onGroupWrite(bridge, source, destination, asdu);
     }
 
+    @SuppressWarnings("null")
     @Override
     public void onGroupWrite(KNXBridgeBaseThingHandler bridge, IndividualAddress source, GroupAddress destination,
             byte[] asdu) {
@@ -557,7 +519,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
                             .addAll(knxChannelSelectorProxy.getTransmitAddresses(selector, channelConfiguration, null));
 
                     if (addresses.contains(destination)) {
-                        logger.trace("Thing {} processes a Group Write telegram for destination '{}' for channel '{}'",
+                        logger.trace("Thing {} processes a Group Write telegram for destination '{}' for channel'{}'",
                                 getThing().getUID(), destination, channel.getUID());
                         processDataReceived(bridge, destination, asdu,
                                 knxChannelSelectorProxy.getDPT(destination, selector, channelConfiguration, null),
@@ -574,6 +536,9 @@ public class KNXGenericThingHandler extends BaseThingHandler
     private void processDataReceived(KNXBridgeBaseThingHandler bridge, GroupAddress destination, byte[] asdu,
             String dpt, ChannelUID channelUID) {
 
+        logger.trace("Thing {} processing data for channel '{}' dpt '{}'  destination '{}'", getThing().getUID(),
+                channelUID, dpt, destination);
+
         if (dpt != null) {
 
             if (KNXCoreTypeMapper.toTypeClass(dpt) == null) {
@@ -585,20 +550,6 @@ public class KNXGenericThingHandler extends BaseThingHandler
             Type type = bridge.getType(destination, dpt, asdu);
 
             if (type != null) {
-                // bridge.logEvent(EventSource.EMPTY, channelUID, type);
-
-                Set<String> linkedItems = itemChannelLinkRegistry.getLinkedItemNames(channelUID);
-                for (String anItem : linkedItems) {
-                    Set<ChannelUID> boundChannels = itemChannelLinkRegistry.getBoundChannels(anItem);
-                    for (ChannelUID aBoundChannel : boundChannels) {
-                        if (aBoundChannel.getBindingId().equals(getThing().getUID().getBindingId())
-                                && !aBoundChannel.getAsString().equals(channelUID.getAsString())) {
-                            logger.trace("Adding channel '{}' of Item '{}' the list of blocked channels", aBoundChannel,
-                                    anItem);
-                            blockedChannels.add(aBoundChannel);
-                        }
-                    }
-                }
                 if (type instanceof State) {
                     updateState(channelUID, (State) type);
                 } else {
@@ -622,6 +573,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
         }
     }
 
+    @SuppressWarnings("null")
     public void restart() {
         if (address != null) {
             ((KNXBridgeBaseThingHandler) getBridge().getHandler()).restartNetworkDevice(address);
@@ -638,6 +590,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
             this.dpt = dpt;
         }
 
+        @SuppressWarnings("null")
         @Override
         public void run() {
             try {
@@ -662,6 +615,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
 
     private Runnable pollingRunnable = new Runnable() {
 
+        @SuppressWarnings("null")
         @Override
         public void run() {
             try {
@@ -688,6 +642,7 @@ public class KNXGenericThingHandler extends BaseThingHandler
 
     private Runnable descriptionRunnable = new Runnable() {
 
+        @SuppressWarnings("null")
         @Override
         public void run() {
             try {
